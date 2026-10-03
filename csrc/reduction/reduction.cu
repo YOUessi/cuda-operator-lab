@@ -93,8 +93,11 @@ extern "C" int cuda_operator_reduction_v1(
 
   const std::uint64_t required_blocks =
       (n + kReductionThreads - 1) / kReductionThreads;
-  const int blocks = static_cast<int>(
-      std::min<std::uint64_t>(required_blocks, kReductionV1MaxBlocks));
+  const std::uint64_t capped_blocks =
+      required_blocks < static_cast<std::uint64_t>(kReductionV1MaxBlocks)
+          ? required_blocks
+          : static_cast<std::uint64_t>(kReductionV1MaxBlocks);
+  const int blocks = static_cast<int>(capped_blocks);
 
   reduction_v1_parallel_atomic_kernel<<<
       blocks,
