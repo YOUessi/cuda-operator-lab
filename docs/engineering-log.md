@@ -13,103 +13,98 @@
 The source of truth is GitHub.
 
 - Source code, tests, build files, reports and documentation are authored on GitHub feature branches.
-- Tang is used only when real CUDA hardware is required: nvcc/CMake builds, GPU correctness tests, benchmarks, Compute Sanitizer, Nsight, and environment diagnosis.
-- Measured results and any fixes discovered by hardware validation are committed back to GitHub before merge.
+- Tang is used only for real CUDA execution: nvcc/CMake builds, GPU tests, benchmarks, Compute Sanitizer, Nsight/profiling and environment diagnosis.
+- Measured results and hardware-discovered fixes are committed back to GitHub before merge.
 
-## Reduction V0 baseline
+## Reduction V0
 
-### Toolchain integration
+V0 uses one CUDA thread for the entire sum.
 
-The cached CUDA packages are split across multiple Conda packages rather than installed as one monolithic toolkit.
+Validation:
 
-Resolution:
+- CUDA 12.8 / `sm_89` build: passed;
+- correctness suite: 11 passed;
+- largest recorded case: roughly 608 ms.
 
-- added `scripts/bootstrap_cuda_toolkit.sh`;
-- assemble a local `.cuda-toolkit/`;
-- combine nvcc tools, NVVM/libdevice, CUDA CRT, CUDA runtime headers, and cudart libraries;
-- keep the assembled toolkit untracked;
-- confirm `compute_89` support with a real RTX 4090 smoke kernel.
+## Reduction V1
 
-### V0 validation
+V1 adds 256-thread blocks and grid-stride loops, but each participating thread performs a same-address global atomic.
 
-- clean CUDA 12.8 / `sm_89` build: passed;
-- reduction correctness suite: 11 passed;
-- largest V0 case: about 608 ms.
+Hardware-validation findings:
 
-## Reduction V1 parallel atomic
+- the assembled CUDA 12.8 toolkit needed nvcc development headers to avoid system-header fallback;
+- an unnecessary `<algorithm>` dependency triggered a host-pass nvcc/GCC 11 issue and was removed.
 
-### Design
-
-V1 adds 256-thread blocks and grid-stride loops. Each thread accumulates a private partial sum and performs one global `atomicAdd`.
-
-The launch is capped at 1,024 blocks, so at most 262,144 threads issue atomics.
-
-### Hardware-validation issues
-
-The first V1 compile exposed two toolchain integration details:
-
-1. the local assembled CUDA 12.8 toolkit needed `cuda-nvcc-dev_linux-64-12.8.*` headers to avoid falling back to system CUDA headers;
-2. an unnecessary C++ `<algorithm>` include triggered an nvcc/GCC 11 host-pass failure in `std_function.h`, so the dependency was removed.
-
-### V1 validation
+Validation:
 
 - full test suite: 26 passed;
-- at N = 16,777,216, V1 measured about 393–450 us depending on run conditions;
-- the large-input latency plateau identified same-address global atomic contention as the next bottleneck.
+- V1 large-shape latency plateaus near 400–450 us;
+- atomic contention identified as the next bottleneck.
 
-## Reduction V2 shared-memory block reduction
+## Reduction V2
+
+V2 reduces per-thread values inside a 256-float shared-memory tree and performs one global atomic per block.
+
+Validation:
+
+- full test suite: 45 passed;
+- V2 ptxas: 12 registers/thread, 1,024 B shared/block, 0 spills;
+- L2-evicted 16M case: ~177 us vs ~172 us for PyTorch.
+
+### Benchmark methodology correction
+
+The RTX 4090 Laptop reports 64 MiB L2, equal to the largest 64 MiB benchmark input. Repeated hot runs can therefore report logical throughput above physical DRAM bandwidth.
+
+The benchmark now:
+
+- separates hot and L2-evicted regimes;
+- records cache mode, L2 size and flush size;
+- uses a 128 MiB cache-preparation buffer in cold mode;
+- labels the derived metric `logical_input_gbps`, not DRAM bandwidth.
+
+## Reduction V3
 
 ### Design
 
-V2 keeps the per-thread grid-stride local sum but writes one value per thread into a 256-float shared-memory array. A power-of-two tree reduction collapses the block to one sum, so only thread 0 performs the global atomic.
+V3 replaces the full shared-memory tree with two levels of warp shuffle:
 
-Maximum global atomic count falls from 262,144 to 1,024.
+1. each of the eight warps reduces 32 thread-local sums in registers with `__shfl_down_sync`;
+2. lane 0 of each warp stores one value, producing only eight shared-memory values;
+3. after one block synchronization, the first warp reduces those eight values with a second shuffle tree;
+4. lane 0 performs one global atomic.
+
+The launch geometry is unchanged from V2, so the experiment isolates the reduction primitive.
 
 ### Validation
 
 - clean CUDA 12.8 / `sm_89` build: passed;
-- complete test suite: **45 passed**;
-- signed random data: passed;
-- pre-filled output reset: passed;
-- non-default CUDA stream: passed.
+- complete pytest suite: **67 passed**;
+- V3 signed input, output reset, and non-default stream checks: passed;
+- CUDA 12.8 Compute Sanitizer memcheck: **0 errors**;
+- CUDA 12.8 Compute Sanitizer synccheck: **0 errors**.
+
+The system-wide Compute Sanitizer is an older 2021.3.1 install and failed to locate its injection library. Hardware validation therefore uses the CUDA 12.8-matched sanitizer from the existing `cuda-sanitizer-api-12.8.93` package.
 
 ### ptxas
 
-V2 uses:
+V3:
 
-- 12 registers per thread;
-- 1,024 bytes shared memory per block;
-- zero spills;
-- zero stack frame.
+- 13 registers/thread;
+- 32 B shared memory/block;
+- one barrier resource;
+- 0 spills;
+- 0-byte stack frame.
 
-### Benchmark methodology correction
+V2 used 1,024 B shared memory/block, so V3 reduces shared-memory footprint by 32x at the cost of one extra register.
 
-The first V2 hot-cache result reported logical input throughput above the GPU's physical DRAM peak. That is not a kernel bug: the RTX 4090 Laptop reports a **64 MiB L2 cache**, and the largest benchmark input is also 64 MiB. Repeated runs can therefore be substantially served by L2.
+### Performance finding
 
-To avoid mislabeling cache throughput as DRAM throughput:
+The focused L2-evicted run uses 20 warmups + 100 repeats:
 
-- the CSV metric was renamed to `logical_input_gbps`;
-- the benchmark now records `cache_mode`, `l2_bytes` and `flush_bytes`;
-- a `cold` mode touches a 128 MiB buffer before every timed launch, evicting a working set twice the L2 capacity;
-- hot and L2-evicted results are reported separately.
+- 262K: 8.192 us → 7.168 us, about **1.14x** faster;
+- 4M: 47.840 us → 47.104 us, about **1.02x** faster;
+- 16M: 177.152 us → 177.200 us, effectively unchanged.
 
-The cache-preparation kernel also sustains GPU clocks, so small-input hot/cold timings are not mixed into one claim.
+This is an important non-monotonic optimization result. Warp shuffle helps when block-reduction coordination is still visible in total latency, but it does not improve the largest memory-dominated case.
 
-### V2 measured result
-
-Under L2-evicted conditions at N = 16,777,216:
-
-- V1: 448.144 us;
-- V2: 177.152 us;
-- PyTorch: 172.032 us;
-- V1 → V2: **2.53x**;
-- V2 / PyTorch: **1.03x**;
-- logical input throughput: 378.821 GB/s.
-
-At N = 262,144, removing per-thread global atomics produces a **46.44x** V1 → V2 speedup.
-
-The V1 atomic-contention plateau disappears, validating the shared-memory reduction hypothesis.
-
-### Next bottleneck
-
-V2 still synchronizes at every shared-memory tree level. V3 will isolate warp-level optimization by using warp shuffle for the final reduction stage before any vectorized-load work is introduced.
+The next isolated bottleneck is therefore the input/load path rather than the final reduction tree.
