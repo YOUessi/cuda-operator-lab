@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export CUDA_HOME="${CUDA_HOME:-/home/you/anaconda3/pkgs/cuda-nvcc-tools-12.8.93-hbdd6827_3}"
-export CUDACXX="${CUDACXX:-${CUDA_HOME}/bin/nvcc}"
-export PATH="${CUDA_HOME}/bin:${PATH}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export CUDA_HOME="${CUDA_TOOLKIT_DIR:-$ROOT/.cuda-toolkit}"
 
-echo "CUDA_HOME=${CUDA_HOME}"
-"${CUDACXX}" --version | tail -n 4
+"$ROOT/scripts/bootstrap_cuda_toolkit.sh" >/dev/null
+
+export CUDACXX="$CUDA_HOME/bin/nvcc"
+export PATH="$CUDA_HOME/bin:$PATH"
+
+echo "CUDA_HOME=$CUDA_HOME"
+"$CUDACXX" --version | tail -n 4

@@ -1,4 +1,22 @@
 add_library(cuda_operator_common INTERFACE)
 target_include_directories(cuda_operator_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/common)
 
-# Operator targets are added incrementally as implementations land.
+add_library(cuda_operator_lab SHARED
+  reduction/reduction.cu
+)
+
+target_include_directories(cuda_operator_lab
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/reduction
+)
+
+target_link_libraries(cuda_operator_lab
+  PRIVATE
+    cuda_operator_common
+)
+
+set_target_properties(cuda_operator_lab PROPERTIES
+  OUTPUT_NAME cuda_operator_lab
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+  CUDA_ARCHITECTURES 89
+)

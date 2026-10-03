@@ -26,3 +26,6 @@ profiling/nsys/*
 .vscode/
 .idea/
 .DS_Store
+
+# Local assembled CUDA toolkit
+.cuda-toolkit/
