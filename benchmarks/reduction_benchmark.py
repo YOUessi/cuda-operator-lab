@@ -16,6 +16,7 @@ from cuda_operator_lab.bindings import (
     reduction_v1_into,
     reduction_v2_into,
     reduction_v3_into,
+    reduction_v4_into,
 )
 from cuda_operator_lab.references import reduction_sum
 
@@ -29,6 +30,7 @@ VARIANTS: dict[str, ReductionFn] = {
     "v1_parallel_atomic": reduction_v1_into,
     "v2_shared_memory": reduction_v2_into,
     "v3_warp_shuffle": reduction_v3_into,
+    "v4_float4": reduction_v4_into,
 }
 
 
@@ -97,6 +99,7 @@ def main() -> None:
         generator = torch.Generator(device="cuda")
         generator.manual_seed(20261004 + n)
         x = torch.rand(n, device="cuda", dtype=torch.float32, generator=generator)
+        alignment_mod16 = x.data_ptr() % 16
         expected = reduction_sum(x)
         torch.cuda.synchronize()
         expected_value = float(expected.item())
@@ -137,6 +140,7 @@ def main() -> None:
                 "cache_mode": args.cache_mode,
                 "l2_bytes": int(properties.L2_cache_size),
                 "flush_bytes": flush_bytes,
+                "input_ptr_mod16": alignment_mod16,
                 "n": n,
                 "bytes_read": bytes_read,
                 "median_us": round(median_us, 3),
@@ -156,6 +160,7 @@ def main() -> None:
                 f"torch={torch_median:>9.3f} us  "
                 f"slowdown={median_us / torch_median:>8.2f}x  "
                 f"logical={logical_input_gbps:>8.3f} GB/s  "
+                f"align16={alignment_mod16:>2}  "
                 f"rel_err={rel_error:.3e}"
             )
 
