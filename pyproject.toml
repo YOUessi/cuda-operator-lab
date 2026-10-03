@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuda-operator-lab"
+version = "0.1.0"
+description = "Profile-guided CUDA operator optimization lab"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
