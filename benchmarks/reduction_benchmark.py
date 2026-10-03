@@ -11,11 +11,23 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import reduction_v0_into, reduction_v1_into
+from cuda_operator_lab.bindings import (
+    reduction_v0_into,
+    reduction_v1_into,
+    reduction_v2_into,
+)
 from cuda_operator_lab.references import reduction_sum
 
 
 DEFAULT_SIZES = [2**10, 2**14, 2**18, 2**22, 2**24]
+
+ReductionFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
+VARIANTS: dict[str, ReductionFn] = {
+    "v0_serial": reduction_v0_into,
+    "v1_parallel_atomic": reduction_v1_into,
+    "v2_shared_memory": reduction_v2_into,
+}
 
 
 def main() -> None:
@@ -23,6 +35,13 @@ def main() -> None:
     parser.add_argument("--sizes", type=int, nargs="*", default=DEFAULT_SIZES)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--repeats", type=int, default=30)
+    parser.add_argument(
+        "--variants",
+        nargs="*",
+        choices=list(VARIANTS),
+        default=list(VARIANTS),
+        help="CUDA variants to benchmark; defaults to all.",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -33,10 +52,7 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required")
 
-    variants: list[tuple[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]]] = [
-        ("v0_serial", reduction_v0_into),
-        ("v1_parallel_atomic", reduction_v1_into),
-    ]
+    variants = [(name, VARIANTS[name]) for name in args.variants]
 
     rows: list[dict[str, object]] = []
     print(f"device={torch.cuda.get_device_name(0)}")
