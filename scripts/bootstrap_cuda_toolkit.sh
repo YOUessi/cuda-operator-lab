@@ -17,6 +17,7 @@ pick_dir() {
 }
 
 NVCC_TOOLS="$(pick_dir 'cuda-nvcc-tools-12.8.*')"
+NVCC_DEV="$(pick_dir 'cuda-nvcc-dev_linux-64-12.8.*')"
 NVVM_TOOLS="$(pick_dir 'cuda-nvvm-tools-12.8.*')"
 CUDART_DEV="$(pick_dir 'cuda-cudart-dev_linux-64-12.8.*')"
 CRT_DEV="$(pick_dir 'cuda-crt-dev_linux-64-12.8.*')"
@@ -38,6 +39,8 @@ ln -s "$NVVM_TOOLS/nvvm/bin/cicc" "$OUT/targets/x86_64-linux/nvvm/bin/cicc"
 ln -s "$NVVM_TOOLS/nvvm/libdevice/libdevice.10.bc" \
   "$OUT/targets/x86_64-linux/nvvm/libdevice/libdevice.10.bc"
 
+cp -as "$NVCC_DEV/targets/x86_64-linux/include/." \
+  "$OUT/targets/x86_64-linux/include/"
 cp -as "$CUDART_DEV/targets/x86_64-linux/include/." \
   "$OUT/targets/x86_64-linux/include/"
 cp -as "$CRT_DEV/targets/x86_64-linux/include/." \
