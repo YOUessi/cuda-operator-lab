@@ -1,0 +1,10 @@
+Function : reduction_v4_float4_kernel (mangled name omitted)
+
+Vector fast path:
+  LDG.E.128 R4, [R4.64]
+
+Scalar tail path:
+  LDG.E R7, [R6.64]
+
+The 128-bit global load confirms that the aligned float4 source path is
+materialized as a vector global-memory load in the generated SM 8.9 SASS.
