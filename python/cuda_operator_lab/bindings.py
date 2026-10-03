@@ -29,7 +29,11 @@ class _Library:
                 "Run ./scripts/build.sh first."
             )
         self.handle = ctypes.CDLL(str(path))
-        for name in ("cuda_operator_reduction_v0", "cuda_operator_reduction_v1"):
+        for name in (
+            "cuda_operator_reduction_v0",
+            "cuda_operator_reduction_v1",
+            "cuda_operator_reduction_v2",
+        ):
             function = getattr(self.handle, name)
             function.argtypes = [
                 ctypes.c_void_p,
@@ -103,6 +107,10 @@ def _reduction_into(
     return out
 
 
+def _allocate_scalar(x: torch.Tensor) -> torch.Tensor:
+    return torch.empty(1, device=x.device, dtype=torch.float32)
+
+
 def reduction_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
     """Launch the V0 single-thread serial reduction into a preallocated scalar."""
     return _reduction_into("cuda_operator_reduction_v0", x, out)
@@ -110,8 +118,7 @@ def reduction_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 
 def reduction_v0(x: torch.Tensor) -> torch.Tensor:
     """Return the V0 CUDA reduction result as a one-element CUDA tensor."""
-    out = torch.empty(1, device=x.device, dtype=torch.float32)
-    return reduction_v0_into(x, out)
+    return reduction_v0_into(x, _allocate_scalar(x))
 
 
 def reduction_v1_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
@@ -121,5 +128,14 @@ def reduction_v1_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 
 def reduction_v1(x: torch.Tensor) -> torch.Tensor:
     """Return the V1 CUDA reduction result as a one-element CUDA tensor."""
-    out = torch.empty(1, device=x.device, dtype=torch.float32)
-    return reduction_v1_into(x, out)
+    return reduction_v1_into(x, _allocate_scalar(x))
+
+
+def reduction_v2_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V2: shared-memory block reduction plus one atomic per block."""
+    return _reduction_into("cuda_operator_reduction_v2", x, out)
+
+
+def reduction_v2(x: torch.Tensor) -> torch.Tensor:
+    """Return the V2 CUDA reduction result as a one-element CUDA tensor."""
+    return reduction_v2_into(x, _allocate_scalar(x))

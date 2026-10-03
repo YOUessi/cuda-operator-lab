@@ -7,99 +7,165 @@
 - Reference: `torch.sum(..., dtype=torch.float32)`.
 - Allocation stays outside the timed region.
 - CUDA events measure GPU work; CPU wall-clock timing is not used.
-- 5 warmup launches + 20 timed launches for the recorded V0/V1 comparison.
-- Reported latency is the median; P95 is retained in the raw CSV.
-- Effective bandwidth = input bytes / measured kernel time.
-- Numerical error is recorded together with performance because reduction order changes floating-point results.
+- Recorded runs use 5 warmups + 20 timed launches.
+- Median and P95 are retained.
+- Numerical error is tracked together with performance.
+
+Two cache regimes are reported:
+
+- **hot:** repeatedly reuse the same input normally;
+- **cold / L2-evicted:** touch a 128 MiB buffer before each timed launch, which is 2x the 64 MiB L2 cache reported by the device.
+
+The `logical_input_gbps` column is input bytes divided by kernel time. It is intentionally **not called DRAM bandwidth** because hot-cache runs can be served from L2 and may exceed the physical DRAM peak.
 
 ---
 
 ## V0 — single-thread serial baseline
 
-### Kernel
+V0 launches one block with one active thread. That thread loops over all `N` float32 values and performs the complete sum serially.
 
-V0 launches one block with one active thread. That thread loops over all `N` float32 values, accumulates in one scalar register, and writes one output.
-
-The implementation is intentionally poor: it gives a clean lower bound for the cost of missing GPU parallelism.
-
-### Observed bottleneck
+Observed bottleneck:
 
 - one active CUDA thread;
 - no grid-level parallelism;
 - no warp-level parallelism;
 - one thread issues all global-memory loads serially.
 
-The largest recorded case, `N = 16,777,216`, takes about **608.6 ms** versus **29.7 us** for `torch.sum`.
+The largest recorded V0 case, `N = 16,777,216`, takes about 608.6 ms.
 
 ---
 
 ## V1 — grid-stride local sums + global atomic accumulation
-
-### Change
 
 V1 introduces 256-thread blocks and caps the launch at 1,024 blocks.
 
 Each thread:
 
 1. walks the input with a grid-stride loop;
-2. accumulates a private `local_sum` in a register;
-3. contributes that partial sum with one global `atomicAdd`.
+2. accumulates a register-local partial sum;
+3. performs one global `atomicAdd` into the final output.
 
-The output scalar is reset with `cudaMemsetAsync` on the caller's current CUDA stream before the kernel launch.
+This closes the serial/parallel gap but can generate as many as 262,144 atomic updates to the same scalar.
 
-This version intentionally does **not** use shared memory or warp shuffle. That keeps the first optimization focused on exposing parallelism and leaves global atomic contention visible for V2.
+The V1 latency plateau around 400–450 us exposed global atomic contention as the dominant next bottleneck.
+
+---
+
+## V2 — shared-memory block reduction
+
+### Change
+
+V2 keeps the same grid-stride local accumulation, but the per-thread partial sums are first reduced inside each block:
+
+```text
+thread local_sum
+      ↓
+shared[256]
+      ↓
+128 + 128
+      ↓
+64 + 64
+      ↓
+32 + 32
+      ↓
+...
+      ↓
+1 block sum
+      ↓
+1 global atomicAdd
+```
+
+With at most 1,024 blocks, V2 reduces worst-case global atomics:
+
+```text
+V1: 262,144 atomics
+V2:   1,024 atomics
+```
+
+That is up to **256x fewer global atomic operations**.
+
+V2 intentionally keeps a full shared-memory tree with `__syncthreads()` at every level. Warp shuffle is reserved for V3 so its impact can be measured independently.
 
 ### Correctness
 
-The full GPU test suite reports **26 passed**:
+After V2 landed, the complete GPU suite reports **45 passed**.
 
-- V0 regression tests remain green;
-- V1 covers `N = 0, 1, 31, 32, 33, 127, 255, 256, 257, 1024, 4097, 65537, 1,000,003`;
-- a pre-filled output tensor verifies that V1 resets output state before accumulation;
-- a non-default PyTorch CUDA stream verifies stream propagation through the ctypes/C ABI boundary.
+V2 specifically covers:
 
-### Measured results
+- empty input;
+- warp boundaries: 31 / 32 / 33;
+- block boundaries: 255 / 256 / 257;
+- 511 / 512 / 513;
+- odd and million-element sizes;
+- signed random input;
+- pre-filled output reset;
+- non-default CUDA stream propagation.
 
-| N | V0 (us) | V1 (us) | V0 → V1 speedup | torch.sum (us) | V1 / torch | V1 BW (GB/s) | V1 relative error |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1,024 | 30.576 | 13.504 | 2.26x | 11.488 | 1.18x | 0.303 | 4.67e-7 |
-| 16,384 | 367.616 | 35.536 | 10.34x | 10.368 | 3.43x | 1.844 | 2.29e-6 |
-| 262,144 | 5,842.944 | 384.000 | 15.22x | 12.288 | 31.25x | 2.731 | 2.93e-6 |
-| 4,194,304 | 82,612.225 | 384.224 | 215.01x | 15.360 | 25.01x | 43.665 | 3.10e-6 |
-| 16,777,216 | 608,578.979 | 393.216 | 1,547.70x | 29.696 | 13.24x | 170.667 | 8.34e-6 |
+### ptxas resource summary
 
-Raw recorded data: `reports/data/reduction_v0_v1_rtx4090_laptop.csv`.
+CUDA 12.8, `sm_89`:
 
-### Observation
+| Variant | Registers / thread | Shared memory / block | Spills |
+|---|---:|---:|---:|
+| V0 | 14 | 0 B | 0 |
+| V1 | 12 | 0 B | 0 |
+| V2 | 12 | 1,024 B | 0 |
 
-V1 massively improves large-input latency because many CUDA threads now load and accumulate in parallel. At `N = 16,777,216`, V1 is about **1,548x faster than V0**.
+Raw ptxas output: `reports/data/reduction_v2_ptxas_sm89.txt`.
 
-However, V1 is still **13.24x slower than PyTorch** at that size.
+### Hot-cache result
 
-The most informative pattern is the V1 latency plateau:
+| N | V1 (us) | V2 (us) | V1 → V2 | torch.sum (us) | V2 / torch |
+|---:|---:|---:|---:|---:|---:|
+| 1,024 | 15.136 | 14.336 | 1.06x | 19.456 | 0.74x |
+| 16,384 | 35.824 | 14.320 | 2.50x | 11.488 | 1.25x |
+| 262,144 | 439.200 | 21.056 | 20.86x | 12.848 | 1.64x |
+| 4,194,304 | 441.344 | 19.568 | 22.55x | 16.384 | 1.19x |
+| 16,777,216 | 450.480 | 43.008 | 10.47x | 33.792 | 1.27x |
 
-- 262,144 elements: 384.000 us
-- 4,194,304 elements: 384.224 us
-- 16,777,216 elements: 393.216 us
+The 64 MiB input matches the device's 64 MiB L2 cache, so hot-cache logical throughput is not a DRAM-bandwidth measurement.
 
-The implementation launches at most 1,024 × 256 = **262,144 threads**, and every participating thread may execute one `atomicAdd` to the same global address. Once all those threads participate, the serialized atomic update path becomes a dominant fixed cost.
+### L2-evicted result
 
-### V2 hypothesis
+| N | V1 (us) | V2 (us) | V1 → V2 | torch.sum (us) | V2 / torch | V2 logical GB/s |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1,024 | 5.472 | 4.128 | 1.33x | 5.120 | 0.81x | 0.992 |
+| 16,384 | 29.904 | 5.120 | 5.84x | 7.168 | 0.71x | 12.800 |
+| 262,144 | 428.032 | 9.216 | **46.44x** | 10.768 | 0.86x | 113.778 |
+| 4,194,304 | 443.376 | 48.128 | 9.21x | 50.176 | 0.96x | 348.596 |
+| 16,777,216 | 448.144 | 177.152 | 2.53x | 172.032 | **1.03x** | 378.821 |
 
-V2 should reduce within each block before touching the global output.
+At `N = 16,777,216`, V2 is only about **3% slower than PyTorch** under the L2-evicted benchmark.
 
-Target structure:
+### Interpretation
+
+The V2 result confirms the V1 hypothesis:
+
+- the ~440 us atomic-contention plateau disappears;
+- the shared-memory tree makes large reductions memory-throughput dominated again;
+- numerical error also drops materially because far fewer unordered global atomic updates occur.
+
+The small-input cold numbers are faster than their hot counterparts because the 128 MiB cache-preparation kernel also keeps the GPU in a sustained active clock state. Therefore the two cache modes are separate regimes and must not be mixed into one speedup claim.
+
+### V3 hypothesis
+
+V2 still performs `__syncthreads()` after every tree level, including the final 32 active threads.
+
+V3 will keep shared memory for cross-warp aggregation but replace the final warp's shared-memory/barrier stages with warp shuffle primitives:
 
 ```text
-per-thread grid-stride local sum
+shared-memory reduction to one value per warp
         ↓
-shared-memory block reduction
+warp-level __shfl_down_sync
         ↓
-one block result
+one block sum
         ↓
-one global atomicAdd per block
+one global atomic
 ```
 
-With the current launch cap, the maximum number of global atomics falls from **262,144** to **1,024** — up to a **256x reduction in atomic operations**.
+That isolates the value of warp-level programming before later experiments with vectorized loads or multi-element-per-thread scheduling.
 
-That is the next isolated optimization to measure before introducing warp shuffle.
+Raw benchmark files:
+
+- `reports/data/reduction_v1_v2_hot_rtx4090_laptop.csv`
+- `reports/data/reduction_v1_v2_cold_rtx4090_laptop.csv`

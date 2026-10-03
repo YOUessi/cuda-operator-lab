@@ -13,14 +13,22 @@ def measure_us(
     *,
     warmup: int,
     repeats: int,
+    before_each: Callable[[], object] | None = None,
 ) -> list[float]:
-    """Measure one CUDA callable with reusable CUDA events."""
+    """Measure one CUDA callable with reusable CUDA events.
+
+    before_each is enqueued on the same current CUDA stream before the start
+    event. It is useful for controlled cache-state preparation without adding
+    the preparation work to the measured interval.
+    """
     if warmup < 0:
         raise ValueError("warmup must be non-negative")
     if repeats <= 0:
         raise ValueError("repeats must be positive")
 
     for _ in range(warmup):
+        if before_each is not None:
+            before_each()
         fn()
     torch.cuda.synchronize()
 
@@ -28,6 +36,8 @@ def measure_us(
     end = torch.cuda.Event(enable_timing=True)
     samples: list[float] = []
     for _ in range(repeats):
+        if before_each is not None:
+            before_each()
         start.record()
         fn()
         end.record()

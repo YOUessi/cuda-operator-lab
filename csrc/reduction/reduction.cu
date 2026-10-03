@@ -8,7 +8,7 @@
 namespace {
 
 constexpr int kReductionThreads = 256;
-constexpr int kReductionV1MaxBlocks = 1024;
+constexpr int kReductionMaxBlocks = 1024;
 
 __global__ void reduction_v0_serial_kernel(
     const float* input,
@@ -39,11 +39,39 @@ __global__ void reduction_v1_parallel_atomic_kernel(
     local_sum += input[i];
   }
 
-  // V1 intentionally uses one global atomic per participating thread.
-  // The next reduction version will reduce within each block first so that
-  // global atomic traffic falls from O(threads) to O(blocks).
   if (local_sum != 0.0F) {
     atomicAdd(output, local_sum);
+  }
+}
+
+__global__ void reduction_v2_shared_memory_kernel(
+    const float* input,
+    float* output,
+    std::uint64_t n) {
+  __shared__ float block_sums[kReductionThreads];
+
+  const std::uint64_t index =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+
+  float local_sum = 0.0F;
+  for (std::uint64_t i = index; i < n; i += stride) {
+    local_sum += input[i];
+  }
+
+  block_sums[threadIdx.x] = local_sum;
+  __syncthreads();
+
+  for (unsigned int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+    if (threadIdx.x < offset) {
+      block_sums[threadIdx.x] += block_sums[threadIdx.x + offset];
+    }
+    __syncthreads();
+  }
+
+  if (threadIdx.x == 0) {
+    atomicAdd(output, block_sums[0]);
   }
 }
 
@@ -55,6 +83,20 @@ int validate_reduction_arguments(
     return static_cast<int>(cudaErrorInvalidValue);
   }
   return static_cast<int>(cudaSuccess);
+}
+
+int reduction_block_count(std::uint64_t n) {
+  const std::uint64_t required_blocks =
+      (n + kReductionThreads - 1) / kReductionThreads;
+  const std::uint64_t capped_blocks =
+      required_blocks < static_cast<std::uint64_t>(kReductionMaxBlocks)
+          ? required_blocks
+          : static_cast<std::uint64_t>(kReductionMaxBlocks);
+  return static_cast<int>(capped_blocks);
+}
+
+cudaError_t reset_output(float* output, cudaStream_t stream) {
+  return cudaMemsetAsync(output, 0, sizeof(float), stream);
 }
 
 }  // namespace
@@ -85,21 +127,37 @@ extern "C" int cuda_operator_reduction_v1(
   }
 
   const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
-  cudaError_t status = cudaMemsetAsync(output, 0, sizeof(float), cuda_stream);
+  const cudaError_t status = reset_output(output, cuda_stream);
   if (status != cudaSuccess || n == 0) {
     return static_cast<int>(status);
   }
 
-  const std::uint64_t required_blocks =
-      (n + kReductionThreads - 1) / kReductionThreads;
-  const std::uint64_t capped_blocks =
-      required_blocks < static_cast<std::uint64_t>(kReductionV1MaxBlocks)
-          ? required_blocks
-          : static_cast<std::uint64_t>(kReductionV1MaxBlocks);
-  const int blocks = static_cast<int>(capped_blocks);
-
   reduction_v1_parallel_atomic_kernel<<<
-      blocks,
+      reduction_block_count(n),
+      kReductionThreads,
+      0,
+      cuda_stream>>>(input, output, n);
+  return static_cast<int>(cudaGetLastError());
+}
+
+extern "C" int cuda_operator_reduction_v2(
+    const float* input,
+    float* output,
+    std::uint64_t n,
+    void* stream) {
+  const int validation = validate_reduction_arguments(input, output, n);
+  if (validation != static_cast<int>(cudaSuccess)) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  const cudaError_t status = reset_output(output, cuda_stream);
+  if (status != cudaSuccess || n == 0) {
+    return static_cast<int>(status);
+  }
+
+  reduction_v2_shared_memory_kernel<<<
+      reduction_block_count(n),
       kReductionThreads,
       0,
       cuda_stream>>>(input, output, n);
