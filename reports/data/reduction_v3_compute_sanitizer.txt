@@ -1,0 +1,18 @@
+Compute Sanitizer 2025.1.0.0 (CUDA 12.8 package)
+
+Representative V3 input:
+  dtype: float32
+  N: 1,000,003
+  distribution: torch.randn
+
+memcheck:
+  ERROR SUMMARY: 0 errors
+
+synccheck:
+  ERROR SUMMARY: 0 errors
+
+Note:
+The machine-wide /usr/bin/compute-sanitizer is the older 2021.3.1 installation
+and failed to locate its injection library. Validation therefore uses the
+CUDA 12.8-matched Compute Sanitizer from:
+  /home/you/anaconda3/pkgs/cuda-sanitizer-api-12.8.93-0/bin/compute-sanitizer

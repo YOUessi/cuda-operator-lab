@@ -33,6 +33,7 @@ class _Library:
             "cuda_operator_reduction_v0",
             "cuda_operator_reduction_v1",
             "cuda_operator_reduction_v2",
+            "cuda_operator_reduction_v3",
         ):
             function = getattr(self.handle, name)
             function.argtypes = [
@@ -139,3 +140,13 @@ def reduction_v2_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 def reduction_v2(x: torch.Tensor) -> torch.Tensor:
     """Return the V2 CUDA reduction result as a one-element CUDA tensor."""
     return reduction_v2_into(x, _allocate_scalar(x))
+
+
+def reduction_v3_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V3: warp-shuffle block reduction plus one atomic per block."""
+    return _reduction_into("cuda_operator_reduction_v3", x, out)
+
+
+def reduction_v3(x: torch.Tensor) -> torch.Tensor:
+    """Return the V3 CUDA reduction result as a one-element CUDA tensor."""
+    return reduction_v3_into(x, _allocate_scalar(x))
