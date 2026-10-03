@@ -1,6 +1,5 @@
 #include "reduction.cuh"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 
