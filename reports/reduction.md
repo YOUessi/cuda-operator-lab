@@ -218,3 +218,127 @@ Raw artifacts:
 - `reports/data/reduction_v2_v3_cold100_rtx4090_laptop.csv`
 - `reports/data/reduction_v3_ptxas_sm89.txt`
 - `reports/data/reduction_v3_compute_sanitizer.txt`
+
+
+---
+
+## V4 — aligned float4 input path
+
+### Change
+
+V4 keeps the V3 warp-shuffle block reduction unchanged and modifies only the aligned input path.
+
+For 16-byte-aligned inputs:
+
+```text
+scalar float loads
+        ↓
+reinterpret input as float4
+        ↓
+one thread loads 4 adjacent float32 values
+        ↓
+local register accumulation
+        ↓
+same V3 warp-shuffle block reduction
+```
+
+The final 0–3 elements are handled by a scalar tail loop. A contiguous tensor may still be misaligned because of a storage offset, so the host launcher checks the device pointer. If `input_ptr % 16 != 0`, V4 falls back to the tested V3 kernel rather than issuing a misaligned vector load.
+
+### Correctness and safety
+
+After V4 landed, the full GPU suite reports **89 passed**.
+
+V4-specific checks include:
+
+- `N = 0,1,2,3,4,5`;
+- warp/block-adjacent and odd lengths;
+- million-element input;
+- pre-filled output reset;
+- non-default CUDA stream;
+- an intentionally unaligned but contiguous `base[1:]` input with pointer mod 16 = 4.
+
+CUDA 12.8 Compute Sanitizer:
+
+```text
+aligned fast path:
+  memcheck:  0 errors
+  racecheck: 0 hazards / 0 errors
+  synccheck: 0 errors
+
+unaligned fallback:
+  memcheck: 0 errors
+```
+
+### Generated code verification
+
+The generated SM 8.9 SASS contains:
+
+```text
+LDG.E.128
+```
+
+for the vector fast path and a scalar `LDG.E` for the tail. This confirms that the `float4` source-level change is not merely syntactic: it materializes as a 128-bit global-memory load.
+
+### ptxas resource summary
+
+| Variant | Registers / thread | Shared memory / block | Spills |
+|---|---:|---:|---:|
+| V3 | 13 | 32 B | 0 |
+| V4 | 16 | 32 B | 0 |
+
+V4 spends three additional registers per thread to hold / accumulate the vector-loaded values.
+
+### Hot-cache results
+
+50 timed repeats:
+
+| N | V3 (us) | V4 (us) | V3 → V4 | torch.sum (us) |
+|---:|---:|---:|---:|---:|
+| 1,024 | 13.216 | **12.640** | 1.05x | 10.736 |
+| 16,384 | **12.496** | 12.800 | 0.98x | 10.240 |
+| 262,144 | 12.288 | 12.288 | 1.00x | 11.424 |
+| 4,194,304 | 17.392 | **16.272** | 1.07x | 16.240 |
+| 16,777,216 | 40.704 | **33.792** | **1.20x** | 33.792 |
+
+The 16M hot-cache result is dominated by L2 effects and is therefore not used as a DRAM-bandwidth claim.
+
+### L2-evicted results
+
+The stable large-shape comparison uses 20 warmups + 100 timed repeats:
+
+| N | V3 (us) | V4 (us) | V3 → V4 | torch.sum (us) | V4 logical GB/s |
+|---:|---:|---:|---:|---:|---:|
+| 262,144 | **7.168** | 8.192 | 0.88x | 10.240 | 128.000 |
+| 4,194,304 | 46.896 | **46.080** | 1.02x | 48.128 | 364.089 |
+| 16,777,216 | 177.152 | **168.960** | **1.05x** | 171.008 | 397.188 |
+
+### Interpretation
+
+Vectorization is beneficial only once each participating thread has enough input work to amortize the changed work distribution.
+
+For 16M elements, V4 improves V3 by about **4.8%** and in this run lands within roughly 1% of PyTorch.
+
+For 4M elements, the gain is only about **1.8%**.
+
+For 262K elements, V4 is **slower**. The launch geometry remains based on scalar `N`, while the vector loop has only `N/4` float4 work items. At that size, only one quarter of the launched threads receive vector work, but all threads still participate in the block-level reduction. The reduction therefore trades fewer load instructions for poorer useful-thread density.
+
+This moves the next optimization target from “make loads wider” to “match launch geometry / elements-per-thread to shape.”
+
+### Next hypothesis
+
+V5 should introduce shape-aware vector dispatch:
+
+- compute launch geometry from vector work rather than scalar element count when the float4 path is active;
+- preserve the V3 scalar path for small or unaligned cases;
+- benchmark where the crossover actually occurs instead of assuming float4 is universally best.
+
+Only after that dispatch experiment should block size or more aggressive multi-element scheduling be changed.
+
+Raw artifacts:
+
+- `reports/data/reduction_v3_v4_hot_rtx4090_laptop.csv`
+- `reports/data/reduction_v3_v4_cold_rtx4090_laptop.csv`
+- `reports/data/reduction_v3_v4_cold100_rtx4090_laptop.csv`
+- `reports/data/reduction_v4_ptxas_sm89.txt`
+- `reports/data/reduction_v4_sass_sm89.txt`
+- `reports/data/reduction_v4_compute_sanitizer.txt`
