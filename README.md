@@ -22,58 +22,58 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Reduction V2
+## Current milestone: Reduction V3
 
-Reduction currently has three deliberately separated stages:
+Reduction now has four deliberately separated implementations:
 
 - **V0 serial:** one CUDA thread sums all values.
 - **V1 parallel atomic:** grid-stride local sums plus one global `atomicAdd` per participating thread.
-- **V2 shared memory:** one shared-memory tree reduction per block, then one global `atomicAdd` per block.
+- **V2 shared memory:** full shared-memory tree reduction per block, then one global `atomicAdd` per block.
+- **V3 warp shuffle:** reduce inside each warp with `__shfl_down_sync`, store only one value per warp in shared memory, then use the first warp to finish the block reduction.
 
-V2 reduces the worst-case global atomic count from 262,144 to at most 1,024 while keeping the same 256-thread / 1,024-block launch cap.
+V3 preserves the same 256-thread / 1,024-block launch policy as V2 so the measured difference isolates the reduction primitive rather than changing launch geometry.
 
 Implemented now:
 
 - PyTorch `torch.sum` reference.
-- CUDA V0 / V1 / V2 kernels behind a small C ABI.
-- Zero-copy PyTorch/ctypes binding using raw CUDA device pointers and the active PyTorch CUDA stream.
-- Correctness coverage for empty, warp-adjacent, block-adjacent, odd, signed and million-element inputs.
+- CUDA V0 / V1 / V2 / V3 kernels behind a small C ABI.
+- Zero-copy PyTorch/ctypes binding using raw CUDA pointers and the active PyTorch CUDA stream.
+- Correctness coverage for empty, warp-boundary, block-boundary, odd, signed and million-element inputs.
 - Reused-output reset and non-default CUDA stream tests.
-- CUDA-event benchmark with warmup, repeated measurements, median/P95 latency and numerical error tracking.
+- CUDA-event benchmark with warmup, repeated measurements, P50/P95 and numerical-error tracking.
 - Hot-cache and L2-evicted benchmark modes.
 - CUDA 12.8 / SM 8.9 ptxas resource capture.
-- Reproducible CUDA 12.8 toolkit assembly from the CUDA packages already present on Tang.
+- CUDA 12.8 Compute Sanitizer memcheck + synccheck validation.
 
-### RTX 4090 Laptop: V1 → V2
+### V3 resource change
 
-Measured on the local NVIDIA GeForce RTX 4090 Laptop GPU, float32, 5 warmups + 20 timed repeats.
+| Variant | Registers / thread | Shared memory / block | Global atomics / block |
+|---|---:|---:|---:|
+| V2 shared memory | 12 | 1,024 B | 1 |
+| V3 warp shuffle | 13 | **32 B** | 1 |
 
-#### L2-evicted mode
+V3 reduces block shared-memory footprint by **32x** while keeping zero spills.
 
-Before each timed launch the benchmark touches a 128 MiB buffer, twice the 64 MiB L2 cache size reported by the GPU.
+### RTX 4090 Laptop: V2 → V3
 
-| N | V1 parallel atomic | V2 shared memory | V1 → V2 | torch.sum | V2 / torch | Logical input throughput |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1,024 | 5.472 us | 4.128 us | 1.33x | 5.120 us | 0.81x | 0.992 GB/s |
-| 16,384 | 29.904 us | 5.120 us | 5.84x | 7.168 us | 0.71x | 12.800 GB/s |
-| 262,144 | 428.032 us | 9.216 us | **46.44x** | 10.768 us | 0.86x | 113.778 GB/s |
-| 4,194,304 | 443.376 us | 48.128 us | 9.21x | 50.176 us | 0.96x | 348.596 GB/s |
-| 16,777,216 | 448.144 us | 177.152 us | 2.53x | 172.032 us | **1.03x** | 378.821 GB/s |
+For a more stable comparison, the canonical L2-evicted large-shape run uses 20 warmups + 100 timed repeats.
 
-At the largest 64 MiB input, V2 is within about 3% of `torch.sum` in this benchmark.
+| N | V2 shared memory | V3 warp shuffle | V2 → V3 | torch.sum | V3 / torch |
+|---:|---:|---:|---:|---:|---:|
+| 262,144 | 8.192 us | **7.168 us** | **1.14x** | 10.416 us | 0.69x |
+| 4,194,304 | 47.840 us | **47.104 us** | 1.02x | 48.128 us | 0.98x |
+| 16,777,216 | 177.152 us | 177.200 us | ~1.00x | 171.008 us | 1.04x |
 
-The reported throughput is **logical input throughput**, not a claim of measured DRAM bandwidth. The repository keeps hot-cache and L2-evicted results separate because the 64 MiB input can fit in the GPU's 64 MiB L2 cache.
+The result is intentionally not presented as “warp shuffle is always faster.” V3 helps when block-reduction overhead is still material, but the gain disappears at 64 MiB where the reduction is dominated by moving the input data rather than coordinating threads.
 
-### Kernel resource footprint
+That is the useful conclusion: **after V2, large-shape reduction is already primarily memory-throughput limited; V3 mainly reduces synchronization/shared-memory overhead for smaller and medium shapes.**
 
-CUDA 12.8 ptxas for `sm_89` reports for V2:
+### Compute Sanitizer
 
-- 12 registers per thread;
-- 1,024 bytes shared memory per block;
-- zero spills;
-- no stack frame.
+CUDA 12.8 Compute Sanitizer on a representative `N=1,000,003` signed float32 input:
 
-Raw results live under `reports/data/`.
+- memcheck: 0 errors
+- synccheck: 0 errors
 
 ## Quick start
 
@@ -83,7 +83,7 @@ Raw results live under `reports/data/`.
 
 PYTHONPATH=$PWD/python \
 python3 benchmarks/reduction_benchmark.py \
-  --variants v1_parallel_atomic v2_shared_memory \
+  --variants v2_shared_memory v3_warp_shuffle \
   --cache-mode cold
 ```
 
