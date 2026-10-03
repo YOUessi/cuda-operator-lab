@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Reduction V3
+## Current milestone: Reduction V4
 
 Reduction now has four deliberately separated implementations:
 
@@ -30,13 +30,14 @@ Reduction now has four deliberately separated implementations:
 - **V1 parallel atomic:** grid-stride local sums plus one global `atomicAdd` per participating thread.
 - **V2 shared memory:** full shared-memory tree reduction per block, then one global `atomicAdd` per block.
 - **V3 warp shuffle:** reduce inside each warp with `__shfl_down_sync`, store only one value per warp in shared memory, then use the first warp to finish the block reduction.
+- **V4 float4 loads:** keep the V3 reduction tree but consume aligned input four floats at a time with a 128-bit global load; unaligned contiguous tensors safely fall back to V3.
 
-V3 preserves the same 256-thread / 1,024-block launch policy as V2 so the measured difference isolates the reduction primitive rather than changing launch geometry.
+V4 preserves the same 256-thread / 1,024-block launch policy and the same warp-shuffle block reduction as V3. The only intended fast-path change is the aligned input load: scalar float loads become float4 loads plus a scalar tail.
 
 Implemented now:
 
 - PyTorch `torch.sum` reference.
-- CUDA V0 / V1 / V2 / V3 kernels behind a small C ABI.
+- CUDA V0 / V1 / V2 / V3 / V4 kernels behind a small C ABI.
 - Zero-copy PyTorch/ctypes binding using raw CUDA pointers and the active PyTorch CUDA stream.
 - Correctness coverage for empty, warp-boundary, block-boundary, odd, signed and million-element inputs.
 - Reused-output reset and non-default CUDA stream tests.
@@ -68,12 +69,36 @@ The result is intentionally not presented as “warp shuffle is always faster.�
 
 That is the useful conclusion: **after V2, large-shape reduction is already primarily memory-throughput limited; V3 mainly reduces synchronization/shared-memory overhead for smaller and medium shapes.**
 
+### V4 vectorized-load result
+
+The aligned V4 path is verified in generated SM 8.9 SASS:
+
+```text
+LDG.E.128
+```
+
+so the compiler does emit a 128-bit global load for the `float4` path. A scalar load remains for the 0–3 element tail. V4 uses 16 registers/thread, 32 B shared memory/block, and zero spills.
+
+Canonical L2-evicted comparison, 20 warmups + 100 timed repeats:
+
+| N | V3 warp shuffle | V4 float4 | V3 → V4 | torch.sum | V4 / torch |
+|---:|---:|---:|---:|---:|---:|
+| 262,144 | **7.168 us** | 8.192 us | 0.88x | 10.240 us | 0.80x |
+| 4,194,304 | 46.896 us | **46.080 us** | 1.02x | 48.128 us | 0.96x |
+| 16,777,216 | 177.152 us | **168.960 us** | **1.05x** | 171.008 us | 0.99x |
+
+The optimization is shape-dependent. At 16M elements the 128-bit load path improves V3 by about 4.8% and matches PyTorch within roughly 1%. At 262K it regresses because the unchanged launch geometry now gives only one quarter of the threads vector work, while the rest still participate in block reduction.
+
+That gives the next bottleneck directly: V5 should make launch geometry / elements-per-thread shape-aware rather than blindly applying vector loads to every shape.
+
 ### Compute Sanitizer
 
 CUDA 12.8 Compute Sanitizer on a representative `N=1,000,003` signed float32 input:
 
 - memcheck: 0 errors
+- racecheck: 0 hazards / 0 errors
 - synccheck: 0 errors
+- unaligned contiguous V4 fallback memcheck: 0 errors
 
 ## Quick start
 

@@ -12,12 +12,36 @@ constexpr int kReductionMaxBlocks = 1024;
 constexpr int kWarpSize = 32;
 constexpr int kWarpsPerBlock = kReductionThreads / kWarpSize;
 constexpr unsigned int kFullWarpMask = 0xffffffffU;
+constexpr std::uintptr_t kFloat4Alignment = 16U;
 
 __device__ __forceinline__ float warp_reduce_sum(float value) {
   for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
     value += __shfl_down_sync(kFullWarpMask, value, offset);
   }
   return value;
+}
+
+__device__ __forceinline__ void finish_warp_block_reduction(
+    float local_sum,
+    float* warp_sums,
+    float* output) {
+  const int lane = threadIdx.x & (kWarpSize - 1);
+  const int warp_id = threadIdx.x / kWarpSize;
+
+  local_sum = warp_reduce_sum(local_sum);
+
+  if (lane == 0) {
+    warp_sums[warp_id] = local_sum;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    float block_sum = lane < kWarpsPerBlock ? warp_sums[lane] : 0.0F;
+    block_sum = warp_reduce_sum(block_sum);
+    if (lane == 0) {
+      atomicAdd(output, block_sum);
+    }
+  }
 }
 
 __global__ void reduction_v0_serial_kernel(
@@ -91,8 +115,6 @@ __global__ void reduction_v3_warp_shuffle_kernel(
     std::uint64_t n) {
   __shared__ float warp_sums[kWarpsPerBlock];
 
-  const int lane = threadIdx.x & (kWarpSize - 1);
-  const int warp_id = threadIdx.x / kWarpSize;
   const std::uint64_t index =
       static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::uint64_t stride =
@@ -103,20 +125,34 @@ __global__ void reduction_v3_warp_shuffle_kernel(
     local_sum += input[i];
   }
 
-  local_sum = warp_reduce_sum(local_sum);
+  finish_warp_block_reduction(local_sum, warp_sums, output);
+}
 
-  if (lane == 0) {
-    warp_sums[warp_id] = local_sum;
-  }
-  __syncthreads();
+__global__ void reduction_v4_float4_kernel(
+    const float* input,
+    float* output,
+    std::uint64_t n) {
+  __shared__ float warp_sums[kWarpsPerBlock];
 
-  if (warp_id == 0) {
-    float block_sum = lane < kWarpsPerBlock ? warp_sums[lane] : 0.0F;
-    block_sum = warp_reduce_sum(block_sum);
-    if (lane == 0) {
-      atomicAdd(output, block_sum);
-    }
+  const std::uint64_t index =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+  const std::uint64_t vector_count = n / 4;
+  const auto* vector_input = reinterpret_cast<const float4*>(input);
+
+  float local_sum = 0.0F;
+  for (std::uint64_t i = index; i < vector_count; i += stride) {
+    const float4 values = vector_input[i];
+    local_sum += (values.x + values.y) + (values.z + values.w);
   }
+
+  const std::uint64_t tail_start = vector_count * 4;
+  for (std::uint64_t i = tail_start + index; i < n; i += stride) {
+    local_sum += input[i];
+  }
+
+  finish_warp_block_reduction(local_sum, warp_sums, output);
 }
 
 int validate_reduction_arguments(
@@ -141,6 +177,11 @@ int reduction_block_count(std::uint64_t n) {
 
 cudaError_t reset_output(float* output, cudaStream_t stream) {
   return cudaMemsetAsync(output, 0, sizeof(float), stream);
+}
+
+bool is_float4_aligned(const float* input) {
+  return (reinterpret_cast<std::uintptr_t>(input) &
+          (kFloat4Alignment - 1U)) == 0U;
 }
 
 }  // namespace
@@ -229,6 +270,41 @@ extern "C" int cuda_operator_reduction_v3(
       kReductionThreads,
       0,
       cuda_stream>>>(input, output, n);
+  return static_cast<int>(cudaGetLastError());
+}
+
+extern "C" int cuda_operator_reduction_v4(
+    const float* input,
+    float* output,
+    std::uint64_t n,
+    void* stream) {
+  const int validation = validate_reduction_arguments(input, output, n);
+  if (validation != static_cast<int>(cudaSuccess)) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  const cudaError_t status = reset_output(output, cuda_stream);
+  if (status != cudaSuccess || n == 0) {
+    return static_cast<int>(status);
+  }
+
+  if (is_float4_aligned(input)) {
+    reduction_v4_float4_kernel<<<
+        reduction_block_count(n),
+        kReductionThreads,
+        0,
+        cuda_stream>>>(input, output, n);
+  } else {
+    // A contiguous tensor may still have a non-zero storage offset. Falling
+    // back keeps the public API correct rather than issuing a misaligned
+    // 16-byte float4 load.
+    reduction_v3_warp_shuffle_kernel<<<
+        reduction_block_count(n),
+        kReductionThreads,
+        0,
+        cuda_stream>>>(input, output, n);
+  }
   return static_cast<int>(cudaGetLastError());
 }
 

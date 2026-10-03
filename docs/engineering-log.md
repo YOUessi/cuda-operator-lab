@@ -108,3 +108,46 @@ The focused L2-evicted run uses 20 warmups + 100 repeats:
 This is an important non-monotonic optimization result. Warp shuffle helps when block-reduction coordination is still visible in total latency, but it does not improve the largest memory-dominated case.
 
 The next isolated bottleneck is therefore the input/load path rather than the final reduction tree.
+
+
+## Reduction V4 vectorized input
+
+### Design
+
+V4 keeps V3's warp-shuffle reduction and one-atomic-per-block structure, but changes the aligned input path to `float4` loads. The scalar tail handles `N % 4`.
+
+Because a contiguous PyTorch tensor can have a non-zero storage offset, V4 checks 16-byte pointer alignment at launch time. Misaligned contiguous inputs fall back to V3.
+
+### Validation
+
+- clean CUDA 12.8 / `sm_89` build: passed;
+- full pytest suite: **89 passed**;
+- intentionally unaligned contiguous input (`base[1:]`, pointer mod 16 = 4): passed through fallback;
+- Compute Sanitizer memcheck fast path: 0 errors;
+- Compute Sanitizer racecheck fast path: 0 hazards / 0 errors;
+- Compute Sanitizer synccheck fast path: 0 errors;
+- Compute Sanitizer memcheck unaligned fallback: 0 errors.
+
+### Generated-code evidence
+
+SM 8.9 SASS contains `LDG.E.128` in the V4 fast path, confirming a 128-bit global load. The scalar tail remains `LDG.E`.
+
+ptxas reports:
+
+- V3: 13 registers/thread, 32 B shared memory/block, 0 spills;
+- V4: 16 registers/thread, 32 B shared memory/block, 0 spills.
+
+### Performance finding
+
+Stable L2-evicted comparison, 20 warmups + 100 repeats:
+
+- 262K: 7.168 us → 8.192 us (**regression**);
+- 4M: 46.896 us → 46.080 us (~1.02x);
+- 16M: 177.152 us → 168.960 us (~1.05x).
+
+V4 therefore validates two things at once:
+
+1. wider loads can help a genuinely memory-dominated large reduction;
+2. vectorization without shape-aware launch geometry is not universally beneficial.
+
+At 262K, the unchanged scalar-based block count launches many threads that have no float4 work. The next isolated experiment should correct vector-path launch geometry before changing any other kernel mechanism.
