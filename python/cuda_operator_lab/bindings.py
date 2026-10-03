@@ -1,6 +1,6 @@
 """Thin ctypes bindings for the CUDA operator library.
 
-The CUDA kernels stay independent from PyTorch's C++ ABI.  PyTorch tensors provide
+The CUDA kernels stay independent from PyTorch's C++ ABI. PyTorch tensors provide
 CUDA storage and streams, while this module passes their raw device pointers to
 the C ABI exported by the shared library.
 """
@@ -29,13 +29,16 @@ class _Library:
                 "Run ./scripts/build.sh first."
             )
         self.handle = ctypes.CDLL(str(path))
-        self.handle.cuda_operator_reduction_v0.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_uint64,
-            ctypes.c_void_p,
-        ]
-        self.handle.cuda_operator_reduction_v0.restype = ctypes.c_int
+        for name in ("cuda_operator_reduction_v0", "cuda_operator_reduction_v1"):
+            function = getattr(self.handle, name)
+            function.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_uint64,
+                ctypes.c_void_p,
+            ]
+            function.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -43,7 +46,11 @@ class _Library:
         if code == 0:
             return
         message = self.handle.cuda_operator_error_string(code)
-        decoded = message.decode("utf-8", errors="replace") if message else "unknown CUDA error"
+        decoded = (
+            message.decode("utf-8", errors="replace")
+            if message
+            else "unknown CUDA error"
+        )
         raise RuntimeError(f"CUDA error {code}: {decoded}")
 
 
@@ -63,31 +70,56 @@ def _validate_reduction_input(x: torch.Tensor) -> None:
     if x.ndim != 1:
         raise ValueError("reduction input must be 1-D")
     if x.dtype != torch.float32:
-        raise TypeError("reduction v0 currently supports float32 only")
+        raise TypeError("reduction currently supports float32 only")
     if not x.is_contiguous():
         raise ValueError("reduction input must be contiguous")
 
 
-def reduction_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
-    """Launch the V0 single-thread serial reduction into a preallocated scalar."""
-    _validate_reduction_input(x)
+def _validate_reduction_output(x: torch.Tensor, out: torch.Tensor) -> None:
     if not out.is_cuda or out.device != x.device:
         raise ValueError("output must be a CUDA tensor on the same device")
     if out.dtype != torch.float32 or out.numel() != 1 or not out.is_contiguous():
         raise ValueError("output must be one contiguous float32 CUDA value")
 
+
+def _reduction_into(
+    symbol: str,
+    x: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    _validate_reduction_input(x)
+    _validate_reduction_output(x, out)
+
+    library = _library()
     stream = torch.cuda.current_stream(device=x.device)
-    code = _library().handle.cuda_operator_reduction_v0(
+    function = getattr(library.handle, symbol)
+    code = function(
         ctypes.c_void_p(x.data_ptr()) if x.numel() else ctypes.c_void_p(),
         ctypes.c_void_p(out.data_ptr()),
         ctypes.c_uint64(x.numel()),
         ctypes.c_void_p(stream.cuda_stream),
     )
-    _library().check(code)
+    library.check(code)
     return out
+
+
+def reduction_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch the V0 single-thread serial reduction into a preallocated scalar."""
+    return _reduction_into("cuda_operator_reduction_v0", x, out)
 
 
 def reduction_v0(x: torch.Tensor) -> torch.Tensor:
     """Return the V0 CUDA reduction result as a one-element CUDA tensor."""
     out = torch.empty(1, device=x.device, dtype=torch.float32)
     return reduction_v0_into(x, out)
+
+
+def reduction_v1_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V1: grid-stride local sums plus one global atomic per thread."""
+    return _reduction_into("cuda_operator_reduction_v1", x, out)
+
+
+def reduction_v1(x: torch.Tensor) -> torch.Tensor:
+    """Return the V1 CUDA reduction result as a one-element CUDA tensor."""
+    out = torch.empty(1, device=x.device, dtype=torch.float32)
+    return reduction_v1_into(x, out)
