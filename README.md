@@ -22,40 +22,58 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Reduction V1
+## Current milestone: Reduction V2
 
-Reduction now has two deliberately separated stages:
+Reduction currently has three deliberately separated stages:
 
 - **V0 serial:** one CUDA thread sums all values.
-- **V1 parallel atomic:** 256-thread blocks perform grid-stride local sums, then every participating thread contributes one global `atomicAdd`.
+- **V1 parallel atomic:** grid-stride local sums plus one global `atomicAdd` per participating thread.
+- **V2 shared memory:** one shared-memory tree reduction per block, then one global `atomicAdd` per block.
 
-V1 establishes real GPU parallelism without hiding the next bottleneck behind shared-memory reduction. The next version can therefore measure the effect of reducing global atomic traffic independently.
+V2 reduces the worst-case global atomic count from 262,144 to at most 1,024 while keeping the same 256-thread / 1,024-block launch cap.
 
 Implemented now:
 
 - PyTorch `torch.sum` reference.
-- CUDA V0 + V1 kernels behind a small C ABI.
-- Zero-copy PyTorch/ctypes binding using raw CUDA device pointers and the current PyTorch CUDA stream.
-- Correctness coverage for empty, warp-adjacent, block-adjacent, odd and million-element inputs.
-- Reused-output reset test and non-default CUDA stream test.
-- CUDA-event benchmark with warmup, repeated measurements, median/P95 latency, effective bandwidth and PyTorch comparison.
+- CUDA V0 / V1 / V2 kernels behind a small C ABI.
+- Zero-copy PyTorch/ctypes binding using raw CUDA device pointers and the active PyTorch CUDA stream.
+- Correctness coverage for empty, warp-adjacent, block-adjacent, odd, signed and million-element inputs.
+- Reused-output reset and non-default CUDA stream tests.
+- CUDA-event benchmark with warmup, repeated measurements, median/P95 latency and numerical error tracking.
+- Hot-cache and L2-evicted benchmark modes.
+- CUDA 12.8 / SM 8.9 ptxas resource capture.
 - Reproducible CUDA 12.8 toolkit assembly from the CUDA packages already present on Tang.
 
-### RTX 4090 Laptop: V0 → V1
+### RTX 4090 Laptop: V1 → V2
 
-Measured on the local NVIDIA GeForce RTX 4090 Laptop GPU, float32, 5 warmups + 20 timed repeats:
+Measured on the local NVIDIA GeForce RTX 4090 Laptop GPU, float32, 5 warmups + 20 timed repeats.
 
-| N | V0 serial | V1 parallel atomic | V0 → V1 | torch.sum | V1 / torch | V1 effective BW |
+#### L2-evicted mode
+
+Before each timed launch the benchmark touches a 128 MiB buffer, twice the 64 MiB L2 cache size reported by the GPU.
+
+| N | V1 parallel atomic | V2 shared memory | V1 → V2 | torch.sum | V2 / torch | Logical input throughput |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1,024 | 30.576 us | 13.504 us | 2.26x | 11.488 us | 1.18x | 0.303 GB/s |
-| 16,384 | 367.616 us | 35.536 us | 10.34x | 10.368 us | 3.43x | 1.844 GB/s |
-| 262,144 | 5,842.944 us | 384.000 us | 15.22x | 12.288 us | 31.25x | 2.731 GB/s |
-| 4,194,304 | 82,612.225 us | 384.224 us | 215.01x | 15.360 us | 25.01x | 43.665 GB/s |
-| 16,777,216 | 608,578.979 us | 393.216 us | 1,547.70x | 29.696 us | 13.24x | 170.667 GB/s |
+| 1,024 | 5.472 us | 4.128 us | 1.33x | 5.120 us | 0.81x | 0.992 GB/s |
+| 16,384 | 29.904 us | 5.120 us | 5.84x | 7.168 us | 0.71x | 12.800 GB/s |
+| 262,144 | 428.032 us | 9.216 us | **46.44x** | 10.768 us | 0.86x | 113.778 GB/s |
+| 4,194,304 | 443.376 us | 48.128 us | 9.21x | 50.176 us | 0.96x | 348.596 GB/s |
+| 16,777,216 | 448.144 us | 177.152 us | 2.53x | 172.032 us | **1.03x** | 378.821 GB/s |
 
-V1 closes the catastrophic serial-parallel gap, but it deliberately issues up to **262,144 global atomic additions** into one output scalar. For large inputs the latency plateaus around 384–393 us even while effective bandwidth rises, which makes the next bottleneck explicit.
+At the largest 64 MiB input, V2 is within about 3% of `torch.sum` in this benchmark.
 
-**V2 target:** perform an intra-block reduction first, then issue only one global atomic per block. With the current launch cap, that reduces worst-case global atomic traffic from 262,144 operations to at most 1,024.
+The reported throughput is **logical input throughput**, not a claim of measured DRAM bandwidth. The repository keeps hot-cache and L2-evicted results separate because the 64 MiB input can fit in the GPU's 64 MiB L2 cache.
+
+### Kernel resource footprint
+
+CUDA 12.8 ptxas for `sm_89` reports for V2:
+
+- 12 registers per thread;
+- 1,024 bytes shared memory per block;
+- zero spills;
+- no stack frame.
+
+Raw results live under `reports/data/`.
 
 ## Quick start
 
@@ -64,13 +82,16 @@ V1 closes the catastrophic serial-parallel gap, but it deliberately issues up to
 ./scripts/test.sh
 
 PYTHONPATH=$PWD/python \
-python3 benchmarks/reduction_benchmark.py
+python3 benchmarks/reduction_benchmark.py \
+  --variants v1_parallel_atomic v2_shared_memory \
+  --cache-mode cold
 ```
 
 ## Local target
 
 - GPU: NVIDIA GeForce RTX 4090 Laptop GPU
 - Compute capability: 8.9 (Ada)
+- L2 cache: 64 MiB
 - Driver: 580.178.04
 - PyTorch: 2.10.0+cu128
 - CUDA runtime reported by PyTorch: 12.8
