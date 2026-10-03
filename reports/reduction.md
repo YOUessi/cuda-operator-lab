@@ -7,99 +7,130 @@
 - Reference: `torch.sum(..., dtype=torch.float32)`.
 - Allocation stays outside the timed region.
 - CUDA events measure GPU work; CPU wall-clock timing is not used.
-- Recorded runs use 5 warmups + 20 timed launches.
-- Median and P95 are retained.
 - Numerical error is tracked together with performance.
 
-Two cache regimes are reported:
+Two cache regimes are kept separate:
 
 - **hot:** repeatedly reuse the same input normally;
-- **cold / L2-evicted:** touch a 128 MiB buffer before each timed launch, which is 2x the 64 MiB L2 cache reported by the device.
+- **L2-evicted:** touch a 128 MiB buffer before every timed launch, twice the 64 MiB L2 capacity reported by the GPU.
 
-The `logical_input_gbps` column is input bytes divided by kernel time. It is intentionally **not called DRAM bandwidth** because hot-cache runs can be served from L2 and may exceed the physical DRAM peak.
-
----
-
-## V0 — single-thread serial baseline
-
-V0 launches one block with one active thread. That thread loops over all `N` float32 values and performs the complete sum serially.
-
-Observed bottleneck:
-
-- one active CUDA thread;
-- no grid-level parallelism;
-- no warp-level parallelism;
-- one thread issues all global-memory loads serially.
-
-The largest recorded V0 case, `N = 16,777,216`, takes about 608.6 ms.
+The CSV field `logical_input_gbps` is input bytes divided by kernel time. It is not labeled DRAM bandwidth because hot-cache runs may be served substantially from L2.
 
 ---
 
-## V1 — grid-stride local sums + global atomic accumulation
+## V0 — serial baseline
 
-V1 introduces 256-thread blocks and caps the launch at 1,024 blocks.
+One CUDA thread performs the full sum.
 
-Each thread:
+Largest recorded case:
 
-1. walks the input with a grid-stride loop;
-2. accumulates a register-local partial sum;
-3. performs one global `atomicAdd` into the final output.
+```text
+N = 16,777,216
+V0 ≈ 608.6 ms
+```
 
-This closes the serial/parallel gap but can generate as many as 262,144 atomic updates to the same scalar.
+This establishes the cost of missing GPU parallelism.
 
-The V1 latency plateau around 400–450 us exposed global atomic contention as the dominant next bottleneck.
+---
+
+## V1 — grid-stride local sums + per-thread global atomic
+
+V1 introduces 256-thread blocks and up to 1,024 blocks.
+
+Each thread computes a register-local grid-stride sum and then performs one `atomicAdd` into the final output.
+
+Worst-case global atomic count:
+
+```text
+1,024 blocks × 256 threads = 262,144 atomics
+```
+
+The large-input latency plateau around 400–450 us exposed same-address global atomic contention as the next bottleneck.
 
 ---
 
 ## V2 — shared-memory block reduction
 
+V2 keeps the same per-thread local sums, then reduces 256 partial values inside each block using shared memory and a power-of-two tree.
+
+Only thread 0 of each block performs the global atomic.
+
+Worst-case global atomic count falls to:
+
+```text
+1,024 atomics
+```
+
+This removes the V1 atomic plateau.
+
+L2-evicted, `N = 16,777,216`:
+
+```text
+V1      448.144 us
+V2      177.152 us
+PyTorch 172.032 us
+```
+
+V2 is therefore within roughly 3% of PyTorch for the largest recorded cold-cache case.
+
+---
+
+## V3 — warp-shuffle block reduction
+
 ### Change
 
-V2 keeps the same grid-stride local accumulation, but the per-thread partial sums are first reduced inside each block:
+V3 isolates warp-level programming while keeping the V2 launch policy unchanged.
+
+Per block:
 
 ```text
-thread local_sum
-      ↓
-shared[256]
-      ↓
-128 + 128
-      ↓
-64 + 64
-      ↓
-32 + 32
-      ↓
-...
-      ↓
-1 block sum
-      ↓
-1 global atomicAdd
+256 thread-local sums
+        ↓
+8 independent warp reductions
+using __shfl_down_sync
+        ↓
+lane 0 of each warp writes 8 values
+to shared memory
+        ↓
+one __syncthreads()
+        ↓
+first warp loads the 8 warp sums
+        ↓
+second warp-shuffle reduction
+        ↓
+one global atomicAdd
 ```
 
-With at most 1,024 blocks, V2 reduces worst-case global atomics:
+Compared with V2:
 
-```text
-V1: 262,144 atomics
-V2:   1,024 atomics
-```
+- shared-memory entries fall from 256 floats to 8 floats;
+- shared memory falls from 1,024 B to 32 B;
+- the explicit tree no longer synchronizes at every reduction level;
+- global atomics remain one per block.
 
-That is up to **256x fewer global atomic operations**.
+### Correctness and safety
 
-V2 intentionally keeps a full shared-memory tree with `__syncthreads()` at every level. Warp shuffle is reserved for V3 so its impact can be measured independently.
+After V3 landed, the full GPU test suite reports **67 passed**.
 
-### Correctness
-
-After V2 landed, the complete GPU suite reports **45 passed**.
-
-V2 specifically covers:
+V3-specific coverage includes:
 
 - empty input;
-- warp boundaries: 31 / 32 / 33;
-- block boundaries: 255 / 256 / 257;
+- 31 / 32 / 33 and 63 / 64 / 65 warp-boundary sizes;
+- 255 / 256 / 257 block-boundary sizes;
 - 511 / 512 / 513;
 - odd and million-element sizes;
 - signed random input;
-- pre-filled output reset;
-- non-default CUDA stream propagation.
+- reused/pre-filled output reset;
+- non-default CUDA stream.
+
+CUDA 12.8 Compute Sanitizer:
+
+```text
+memcheck:  0 errors
+synccheck: 0 errors
+```
+
+Representative sanitizer input: 1,000,003 signed float32 values.
 
 ### ptxas resource summary
 
@@ -107,65 +138,83 @@ CUDA 12.8, `sm_89`:
 
 | Variant | Registers / thread | Shared memory / block | Spills |
 |---|---:|---:|---:|
-| V0 | 14 | 0 B | 0 |
-| V1 | 12 | 0 B | 0 |
 | V2 | 12 | 1,024 B | 0 |
+| V3 | 13 | **32 B** | 0 |
 
-Raw ptxas output: `reports/data/reduction_v2_ptxas_sm89.txt`.
+V3 trades one additional register for a 32x reduction in shared-memory footprint.
 
-### Hot-cache result
+### Hot-cache results
 
-| N | V1 (us) | V2 (us) | V1 → V2 | torch.sum (us) | V2 / torch |
-|---:|---:|---:|---:|---:|---:|
-| 1,024 | 15.136 | 14.336 | 1.06x | 19.456 | 0.74x |
-| 16,384 | 35.824 | 14.320 | 2.50x | 11.488 | 1.25x |
-| 262,144 | 439.200 | 21.056 | 20.86x | 12.848 | 1.64x |
-| 4,194,304 | 441.344 | 19.568 | 22.55x | 16.384 | 1.19x |
-| 16,777,216 | 450.480 | 43.008 | 10.47x | 33.792 | 1.27x |
+50 timed repeats:
 
-The 64 MiB input matches the device's 64 MiB L2 cache, so hot-cache logical throughput is not a DRAM-bandwidth measurement.
+| N | V2 (us) | V3 (us) | V2 → V3 | torch.sum (us) |
+|---:|---:|---:|---:|---:|
+| 1,024 | 14.336 | 13.968 | 1.03x | 11.392 |
+| 16,384 | 14.112 | 14.336 | 0.98x | 11.136 |
+| 262,144 | 14.256 | 13.696 | 1.04x | 13.264 |
+| 4,194,304 | 19.568 | 17.408 | **1.12x** | 16.384 |
+| 16,777,216 | 43.088 | 41.184 | 1.05x | 34.448 |
 
-### L2-evicted result
+Hot-cache measurements are useful for kernel-overhead comparisons but are not used to claim DRAM bandwidth.
 
-| N | V1 (us) | V2 (us) | V1 → V2 | torch.sum (us) | V2 / torch | V2 logical GB/s |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1,024 | 5.472 | 4.128 | 1.33x | 5.120 | 0.81x | 0.992 |
-| 16,384 | 29.904 | 5.120 | 5.84x | 7.168 | 0.71x | 12.800 |
-| 262,144 | 428.032 | 9.216 | **46.44x** | 10.768 | 0.86x | 113.778 |
-| 4,194,304 | 443.376 | 48.128 | 9.21x | 50.176 | 0.96x | 348.596 |
-| 16,777,216 | 448.144 | 177.152 | 2.53x | 172.032 | **1.03x** | 378.821 |
+### L2-evicted full-shape results
 
-At `N = 16,777,216`, V2 is only about **3% slower than PyTorch** under the L2-evicted benchmark.
+50 timed repeats:
+
+| N | V2 (us) | V3 (us) | V2 → V3 | torch.sum (us) |
+|---:|---:|---:|---:|---:|
+| 1,024 | 4.096 | 4.096 | 1.00x | 4.912 |
+| 16,384 | 4.592 | 4.288 | 1.07x | 7.168 |
+| 262,144 | 8.192 | 7.280 | **1.13x** | 10.240 |
+| 4,194,304 | 47.104 | 48.944 | 0.96x | 48.128 |
+| 16,777,216 | 177.152 | 178.176 | 0.99x | 171.008 |
+
+Because the large-shape V2/V3 differences are small, a second focused run used 20 warmups + 100 timed repeats.
+
+### Stable large-shape L2-evicted comparison
+
+| N | V2 (us) | V3 (us) | V2 → V3 | torch.sum (us) |
+|---:|---:|---:|---:|---:|
+| 262,144 | 8.192 | **7.168** | **1.14x** | 10.416 |
+| 4,194,304 | 47.840 | **47.104** | 1.02x | 48.128 |
+| 16,777,216 | 177.152 | 177.200 | ~1.00x | 171.008 |
 
 ### Interpretation
 
-The V2 result confirms the V1 hypothesis:
+The experiment gives a more useful result than a blanket “V3 is faster” statement.
 
-- the ~440 us atomic-contention plateau disappears;
-- the shared-memory tree makes large reductions memory-throughput dominated again;
-- numerical error also drops materially because far fewer unordered global atomic updates occur.
+For medium shapes, warp shuffle removes enough synchronization/shared-memory overhead to matter: the stable 262K case improves by about **14%**.
 
-The small-input cold numbers are faster than their hot counterparts because the 128 MiB cache-preparation kernel also keeps the GPU in a sustained active clock state. Therefore the two cache modes are separate regimes and must not be mixed into one speedup claim.
+For 4M elements, the gain shrinks to about **1.6%**.
 
-### V3 hypothesis
+For 16M elements, V2 and V3 are effectively tied.
 
-V2 still performs `__syncthreads()` after every tree level, including the final 32 active threads.
-
-V3 will keep shared memory for cross-warp aggregation but replace the final warp's shared-memory/barrier stages with warp shuffle primitives:
+That means the dominant bottleneck has moved again:
 
 ```text
-shared-memory reduction to one value per warp
-        ↓
-warp-level __shfl_down_sync
-        ↓
-one block sum
-        ↓
-one global atomic
+V0: insufficient parallelism
+ ↓
+V1: global atomic contention
+ ↓
+V2: contention largely removed
+ ↓
+V3: coordination overhead reduced
+ ↓
+large inputs: input-memory movement dominates
 ```
 
-That isolates the value of warp-level programming before later experiments with vectorized loads or multi-element-per-thread scheduling.
+This is the expected transition from synchronization-bound work toward a memory-throughput-bound reduction.
 
-Raw benchmark files:
+### Next hypothesis
 
-- `reports/data/reduction_v1_v2_hot_rtx4090_laptop.csv`
-- `reports/data/reduction_v1_v2_cold_rtx4090_laptop.csv`
+V4 should target the input path rather than the reduction tree.
+
+The next isolated experiment will keep the V3 warp-shuffle reduction structure and change only how each thread consumes input, beginning with multi-element/vectorized loads where alignment permits. The goal is to test whether fewer load instructions / more work per thread helps before changing block size or introducing more aggressive scheduling.
+
+Raw artifacts:
+
+- `reports/data/reduction_v2_v3_hot_rtx4090_laptop.csv`
+- `reports/data/reduction_v2_v3_cold_rtx4090_laptop.csv`
+- `reports/data/reduction_v2_v3_cold100_rtx4090_laptop.csv`
+- `reports/data/reduction_v3_ptxas_sm89.txt`
+- `reports/data/reduction_v3_compute_sanitizer.txt`
