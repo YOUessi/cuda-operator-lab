@@ -1,0 +1,19 @@
+CUDA 12.8, sm_89, reduction.cu, -Xptxas=-v
+
+reduction_v4_float4_kernel:
+  stack frame: 0 bytes
+  spill stores: 0 bytes
+  spill loads: 0 bytes
+  registers: 16
+  shared memory: 32 bytes
+  barrier resource: used
+  constant memory[0]: 376 bytes
+
+reduction_v3_warp_shuffle_kernel:
+  stack frame: 0 bytes
+  spill stores: 0 bytes
+  spill loads: 0 bytes
+  registers: 13
+  shared memory: 32 bytes
+  barrier resource: used
+  constant memory[0]: 376 bytes
