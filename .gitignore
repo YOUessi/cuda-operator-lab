@@ -1,0 +1,28 @@
+# Build
+build/
+cmake-build-*/
+*.o
+*.so
+*.a
+*.out
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+*.egg-info/
+
+# Benchmark/profiler generated data
+benchmarks/results/*
+!benchmarks/results/.gitkeep
+profiling/ncu/*
+!profiling/ncu/.gitkeep
+profiling/nsys/*
+!profiling/nsys/.gitkeep
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
