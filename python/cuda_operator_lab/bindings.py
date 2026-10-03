@@ -34,6 +34,7 @@ class _Library:
             "cuda_operator_reduction_v1",
             "cuda_operator_reduction_v2",
             "cuda_operator_reduction_v3",
+            "cuda_operator_reduction_v4",
         ):
             function = getattr(self.handle, name)
             function.argtypes = [
@@ -118,7 +119,6 @@ def reduction_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 
 
 def reduction_v0(x: torch.Tensor) -> torch.Tensor:
-    """Return the V0 CUDA reduction result as a one-element CUDA tensor."""
     return reduction_v0_into(x, _allocate_scalar(x))
 
 
@@ -128,7 +128,6 @@ def reduction_v1_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 
 
 def reduction_v1(x: torch.Tensor) -> torch.Tensor:
-    """Return the V1 CUDA reduction result as a one-element CUDA tensor."""
     return reduction_v1_into(x, _allocate_scalar(x))
 
 
@@ -138,7 +137,6 @@ def reduction_v2_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 
 
 def reduction_v2(x: torch.Tensor) -> torch.Tensor:
-    """Return the V2 CUDA reduction result as a one-element CUDA tensor."""
     return reduction_v2_into(x, _allocate_scalar(x))
 
 
@@ -148,5 +146,13 @@ def reduction_v3_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 
 
 def reduction_v3(x: torch.Tensor) -> torch.Tensor:
-    """Return the V3 CUDA reduction result as a one-element CUDA tensor."""
     return reduction_v3_into(x, _allocate_scalar(x))
+
+
+def reduction_v4_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V4: float4 loads when 16-byte aligned, otherwise fall back to V3."""
+    return _reduction_into("cuda_operator_reduction_v4", x, out)
+
+
+def reduction_v4(x: torch.Tensor) -> torch.Tensor:
+    return reduction_v4_into(x, _allocate_scalar(x))
