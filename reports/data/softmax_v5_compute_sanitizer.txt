@@ -1,0 +1,26 @@
+CUDA 12.8 Compute Sanitizer 2025.1.0.0
+
+Softmax V5 dispatcher validation on NVIDIA GeForce RTX 4090 Laptop GPU.
+
+Representative shapes intentionally cover both sides of each dispatcher and the wide fallback:
+
+  4095 x 32   -> V3 width-aware path
+  4096 x 32   -> V4 packed-row path
+  2047 x 128  -> V3 width-aware path
+  2048 x 128  -> V4 packed-row path
+  1024 x 512  -> wide V3 path
+
+memcheck:
+  ERROR SUMMARY: 0 errors
+
+racecheck:
+  RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+synccheck:
+  ERROR SUMMARY: 0 errors
+
+Maximum observed absolute element error across the representative shapes:
+  <= 5.960464478e-08
+
+Maximum observed row-sum error:
+  <= 2.384185791e-07
