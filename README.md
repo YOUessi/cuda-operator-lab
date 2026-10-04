@@ -22,9 +22,9 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Reduction V5
+## Current milestone: Softmax V0
 
-Reduction now has four deliberately separated implementations:
+Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
 
 - **V0 serial:** one CUDA thread sums all values.
 - **V1 parallel atomic:** grid-stride local sums plus one global `atomicAdd` per participating thread.
@@ -129,6 +129,28 @@ CUDA 12.8 Compute Sanitizer on a representative `N=1,000,003` signed float32 inp
 - racecheck: 0 hazards / 0 errors
 - synccheck: 0 errors
 - unaligned contiguous V4 fallback memcheck: 0 errors
+
+
+### Softmax V0 baseline
+
+The second operator has started with an intentionally simple row-wise baseline:
+
+```text
+one CUDA thread per row
+-> serial max
+-> serial exp + sum
+-> serial normalize
+```
+
+Clean RTX 4090 Laptop validation:
+
+- full repository test suite: **131 passed**;
+- Compute Sanitizer memcheck / racecheck / synccheck: clean;
+- ptxas: 24 registers/thread, 0 spills.
+
+The width bottleneck is intentionally obvious: `128 × 4096` takes **1,595.392 us** versus **9.328 us** for `torch.softmax` (~171x slower). This establishes the baseline for one-block-per-row parallel Softmax V1.
+
+Detailed operation history and raw artifacts are in `docs/experiment-log.md` and `reports/data/softmax_v0_*`.
 
 ## Quick start
 

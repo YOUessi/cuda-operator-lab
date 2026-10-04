@@ -188,3 +188,41 @@ The full operation-by-operation record is maintained in `docs/experiment-log.md`
 ### Decision
 
 Stop deepening Reduction after V5. The next implementation target is row-wise Softmax so the project demonstrates the same profile-guided workflow on a multi-stage normalization operator.
+
+
+## Softmax V0 serial row baseline
+
+### Design
+
+Softmax V0 introduces the project's first 2-D normalization operator. Each CUDA thread owns one row and performs three serial passes:
+
+1. row maximum;
+2. exponentiation plus denominator accumulation;
+3. normalization.
+
+The implementation subtracts the row maximum before `expf` for numerical stability and uses the caller's active PyTorch CUDA stream.
+
+### Hardware-validation issue
+
+The first clean build failed because `CUDART_INF_F` was not defined by the assembled CUDA header view. The fix was made on GitHub by replacing it with the standard `-FLT_MAX` initialization from `<cfloat>`.
+
+After the fix:
+
+- clean build: PASS;
+- complete repository suite: **131 passed**;
+- Compute Sanitizer memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors;
+- ptxas: 24 registers/thread, 0 spills, no barriers.
+
+### Performance finding
+
+V0 scales primarily with row width because intra-row work is serial.
+
+Representative results:
+
+- 128 × 128: 60.416 us vs PyTorch 9.216 us;
+- 128 × 1024: 416.768 us vs PyTorch 8.192 us;
+- 128 × 4096: 1,595.392 us vs PyTorch 9.328 us.
+
+The next isolated change is one-block-per-row intra-row parallelism with shared-memory max and sum reductions.

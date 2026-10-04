@@ -46,6 +46,15 @@ class _Library:
             ]
             function.restype = ctypes.c_int
 
+        self.handle.cuda_operator_softmax_v0.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+        ]
+        self.handle.cuda_operator_softmax_v0.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -166,3 +175,53 @@ def reduction_v5_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 
 def reduction_v5(x: torch.Tensor) -> torch.Tensor:
     return reduction_v5_into(x, _allocate_scalar(x))
+
+
+def _validate_softmax_input(x: torch.Tensor) -> None:
+    if not x.is_cuda:
+        raise ValueError("softmax input must be a CUDA tensor")
+    if x.ndim != 2:
+        raise ValueError("softmax input must be 2-D [rows, cols]")
+    if x.dtype != torch.float32:
+        raise TypeError("softmax currently supports float32 only")
+    if not x.is_contiguous():
+        raise ValueError("softmax input must be contiguous")
+    if x.shape[1] == 0:
+        raise ValueError("softmax requires cols > 0")
+
+
+def _validate_softmax_output(x: torch.Tensor, out: torch.Tensor) -> None:
+    if not out.is_cuda or out.device != x.device:
+        raise ValueError("softmax output must be a CUDA tensor on the same device")
+    if out.dtype != torch.float32 or out.shape != x.shape or not out.is_contiguous():
+        raise ValueError(
+            "softmax output must be contiguous float32 with the same shape"
+        )
+
+
+def softmax_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V0: one CUDA thread serially computes one row."""
+    _validate_softmax_input(x)
+    _validate_softmax_output(x, out)
+
+    rows, cols = x.shape
+    if rows == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_softmax_v0(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(rows),
+        ctypes.c_uint64(cols),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def softmax_v0(x: torch.Tensor) -> torch.Tensor:
+    """Return row-wise Softmax V0 output."""
+    out = torch.empty_like(x)
+    return softmax_v0_into(x, out)

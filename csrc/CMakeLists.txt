@@ -3,11 +3,13 @@ target_include_directories(cuda_operator_common INTERFACE ${CMAKE_CURRENT_SOURCE
 
 add_library(cuda_operator_lab SHARED
   reduction/reduction.cu
+  softmax/softmax.cu
 )
 
 target_include_directories(cuda_operator_lab
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/reduction
+    ${CMAKE_CURRENT_SOURCE_DIR}/softmax
 )
 
 target_link_libraries(cuda_operator_lab
