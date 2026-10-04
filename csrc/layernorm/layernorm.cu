@@ -22,8 +22,8 @@ __device__ __forceinline__ float warp_reduce_sum(float value) {
 }
 
 struct WelfordState {
-  double mean;
-  double m2;
+  float mean;
+  float m2;
   unsigned int count;
 };
 
@@ -37,18 +37,18 @@ __device__ __forceinline__ WelfordState welford_combine(
     return b;
   }
 
-  const double delta = b.mean - a.mean;
+  const float delta = b.mean - a.mean;
   const unsigned int count = a.count + b.count;
-  const double b_fraction =
-      static_cast<double>(b.count) / static_cast<double>(count);
+  const float b_fraction =
+      static_cast<float>(b.count) / static_cast<float>(count);
 
   WelfordState out;
   out.mean = a.mean + delta * b_fraction;
   out.m2 =
       a.m2 + b.m2 +
       delta * delta *
-          (static_cast<double>(a.count) * static_cast<double>(b.count) /
-           static_cast<double>(count));
+          (static_cast<float>(a.count) * static_cast<float>(b.count) /
+           static_cast<float>(count));
   out.count = count;
   return out;
 }
@@ -261,8 +261,8 @@ __global__ void layernorm_v3_welford_row_kernel(
     std::uint64_t rows,
     std::uint64_t cols,
     float eps) {
-  __shared__ double warp_means[kWarpsPerBlock];
-  __shared__ double warp_m2[kWarpsPerBlock];
+  __shared__ float warp_means[kWarpsPerBlock];
+  __shared__ float warp_m2[kWarpsPerBlock];
   __shared__ unsigned int warp_counts[kWarpsPerBlock];
 
   const std::uint64_t row = blockIdx.x;
@@ -276,13 +276,13 @@ __global__ void layernorm_v3_welford_row_kernel(
   const float* row_input = input + row * cols;
   float* row_output = output + row * cols;
 
-  WelfordState local{0.0, 0.0, 0U};
+  WelfordState local{0.0F, 0.0F, 0U};
   for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
-    const double value = static_cast<double>(row_input[col]);
+    const float value = row_input[col];
     const unsigned int next_count = local.count + 1U;
-    const double delta = value - local.mean;
-    local.mean += delta / static_cast<double>(next_count);
-    const double delta2 = value - local.mean;
+    const float delta = value - local.mean;
+    local.mean += delta / static_cast<float>(next_count);
+    const float delta2 = value - local.mean;
     local.m2 += delta * delta2;
     local.count = next_count;
   }
@@ -296,7 +296,7 @@ __global__ void layernorm_v3_welford_row_kernel(
   __syncthreads();
 
   if (warp_id == 0) {
-    WelfordState block_state{0.0, 0.0, 0U};
+    WelfordState block_state{0.0F, 0.0F, 0U};
     if (lane < kWarpsPerBlock) {
       block_state.mean = warp_means[lane];
       block_state.m2 = warp_m2[lane];
@@ -305,15 +305,15 @@ __global__ void layernorm_v3_welford_row_kernel(
     block_state = warp_reduce_welford(block_state);
     if (lane == 0) {
       warp_means[0] = block_state.mean;
-      const double variance =
-          block_state.m2 / static_cast<double>(block_state.count);
-      warp_m2[0] = rsqrt(variance + static_cast<double>(eps));
+      const float variance =
+          block_state.m2 / static_cast<float>(block_state.count);
+      warp_m2[0] = rsqrtf(variance + eps);
     }
   }
   __syncthreads();
 
-  const float mean = static_cast<float>(warp_means[0]);
-  const float inverse_std = static_cast<float>(warp_m2[0]);
+  const float mean = warp_means[0];
+  const float inverse_std = warp_m2[0];
 
   for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
     const float normalized = (row_input[col] - mean) * inverse_std;
