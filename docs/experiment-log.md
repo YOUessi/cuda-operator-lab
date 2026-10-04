@@ -3122,3 +3122,44 @@ Artifacts:
 Fusion alone is not a performance win when the fused kernel serializes hidden-width work.
 
 Next action: V1 should use one 256-thread block per row, shared-memory mean/variance reductions, and parallel affine output while keeping residual addition fused into all three passes.
+
+## E25 — Fused Residual + LayerNorm V1: block-parallel reductions
+
+Status: **validated; ready to merge**
+
+V1 design:
+
+```text
+one 256-thread block per row
+  -> fused x + residual local sum
+  -> shared-memory mean reduction
+  -> fused x + residual squared deviation
+  -> shared-memory variance reduction
+  -> parallel affine output
+```
+
+Validation:
+
+```text
+clean build: PASS
+full pytest: 520 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+ptxas: 21 registers/thread, 1024 B shared memory, 0 spills
+```
+
+Representative fused V1 versus unfused PyTorch:
+
+| Shape | Fused V1 | PyTorch unfused | Result |
+|---:|---:|---:|---|
+| 128 x 128 | 11.872 us | 13.312 us | fused faster |
+| 128 x 512 | 11.264 us | 12.992 us | fused faster |
+| 128 x 1024 | 12.064 us | 13.120 us | fused faster |
+| 128 x 4096 | 15.632 us | 14.336 us | fused slower |
+| 1024 x 4096 | 46.080 us | 40.848 us | fused slower |
+| 128 x 8192 | 25.056 us | 19.088 us | fused slower |
+
+This is the first stage where eliminating the residual intermediate translates into an end-to-end latency win.
+
+Next action: V2 warp-shuffle reductions.
