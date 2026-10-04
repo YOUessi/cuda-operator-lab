@@ -835,6 +835,57 @@ This isolates synchronization/shared-memory reduction overhead before any vector
 
 ---
 
+## E09 — Softmax V2: warp-shuffle max/sum reductions
+
+Status: **in progress**
+
+### Hypothesis
+
+Softmax V1 removed serial intra-row work, but each row still executes two full 256-thread shared-memory reduction trees. Replacing those trees with warp-level shuffles should reduce synchronization and shared-memory traffic while keeping the row traversal and launch geometry unchanged.
+
+### Operation 1 — GitHub implementation
+
+V2 keeps:
+
+- one block per row;
+- 256 threads per block;
+- strided column traversal;
+- three Softmax stages;
+- output staging between exp/sum and normalize.
+
+Only the two block reductions change.
+
+```text
+thread-local value
+  -> warp __shfl_down_sync
+  -> lane 0 writes one value per warp
+  -> shared[8]
+  -> one block synchronization
+  -> first warp final reduction
+```
+
+The same scheme is used for both max and sum.
+
+A deliberate post-read barrier is retained after the block max result so the shared warp buffer cannot be reused for the sum reduction until all warps have loaded the row max. This directly carries forward the V1 Racecheck lesson.
+
+Added:
+
+- `cuda_operator_softmax_v2` C ABI;
+- Python binding;
+- V2 tests around warp and block boundaries;
+- V2 benchmark variant.
+
+### Required hardware validation
+
+- clean CUDA 12.8 / SM 8.9 build;
+- complete repository regression suite;
+- memcheck / racecheck / synccheck;
+- V1 vs V2 benchmark on the same matrix;
+- ptxas resource comparison;
+- derive the next Softmax bottleneck from measured evidence.
+
+---
+
 ## Template for future experiments
 
 ### Hypothesis
