@@ -809,3 +809,34 @@ Representative latency versus unfused PyTorch `x + residual` followed by `layer_
 - 1024 x 4096: 1882.112 us vs 40.944 us.
 
 Conclusion: eliminating the intermediate tensor is insufficient when the fused kernel remains serial within each row. The next experiment must combine fusion with intra-row block parallelism.
+
+## Fused Residual + LayerNorm V1 block-parallel reductions
+
+V1 keeps residual addition fused while moving each row to one 256-thread block with shared-memory reductions for mean and variance.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **520 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 21 registers/thread, 1024 B shared memory/block, 0 spills.
+
+Selected V0 -> V1:
+
+- 128 x 512: 323.584 us -> 11.264 us;
+- 128 x 1024: 591.872 us -> 12.064 us;
+- 128 x 4096: 1870.800 us -> 15.632 us;
+- 1024 x 4096: 1881.232 us -> 46.080 us;
+- 128 x 8192: 3836.128 us -> 25.056 us.
+
+Compared with unfused PyTorch add + LayerNorm:
+
+- 128 x 128: fused V1 11.872 us vs 13.312 us;
+- 128 x 512: 11.264 us vs 12.992 us;
+- 128 x 1024: 12.064 us vs 13.120 us.
+
+Fusion now produces measurable end-to-end wins on small/medium shapes, while wide/high-row cases still leave headroom.
+
+Next: replace the two shared-memory trees with warp-shuffle reductions while keeping residual fusion and scalar IO constant.
