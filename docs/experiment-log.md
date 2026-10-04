@@ -1129,3 +1129,59 @@ otherwise    -> 256 threads
 ```
 
 This isolates launch/work efficiency before adding vectorized loads or changing the three-pass Softmax algorithm.
+
+
+---
+
+## E10 — Softmax V3: width-aware block sizing
+
+Status: **in progress**
+
+### Hypothesis
+
+Softmax V2 removes most shared-memory reduction overhead, but still launches 256 threads for every row width.
+
+For narrow rows this creates inactive column workers:
+
+```text
+cols = 128
+block = 256 threads
+-> 128 threads have column work
+-> 128 threads contribute only reduction identities
+```
+
+The stable V2 benchmark still shows `1024 x 128 = 10.240 us` versus PyTorch `8.096 us`.
+
+### Operation 1 — experiment branch and scope lock
+
+Created branch:
+
+```text
+feat/softmax-v3-width-aware-blocks
+```
+
+This experiment will change only block width:
+
+```text
+cols <= 32   -> 32 threads
+cols <= 64   -> 64 threads
+cols <= 128  -> 128 threads
+otherwise    -> 256 threads
+```
+
+Held constant:
+
+- one block per row;
+- V2 warp-shuffle max/sum reduction;
+- three Softmax passes;
+- block-stride column traversal;
+- float32;
+- no float4/vectorized IO yet.
+
+Planned evidence:
+
+- clean CUDA build and full pytest;
+- memcheck/racecheck/synccheck on both narrow and wide rows;
+- ptxas resources;
+- boundary benchmark around 32/64/128/256 columns;
+- stable V2 vs V3 benchmark on 128-row and 1024-row shapes.
