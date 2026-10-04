@@ -394,7 +394,13 @@ extern "C" int cuda_operator_softmax_v3(
   } else if (cols <= 128) {
     launch_softmax_v3<128>(input, output, rows, cols, cuda_stream);
   } else {
-    launch_softmax_v3<256>(input, output, rows, cols, cuda_stream);
+    // Preserve V2 exactly for wider rows so this experiment isolates the
+    // effect of reducing block width on narrow rows.
+    softmax_v2_warp_row_kernel<<<
+        static_cast<unsigned int>(rows),
+        kSoftmaxBlockThreads,
+        0,
+        cuda_stream>>>(input, output, rows, cols);
   }
   return static_cast<int>(cudaGetLastError());
 }
