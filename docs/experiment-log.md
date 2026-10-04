@@ -877,7 +877,7 @@ Derive the next change from the measured bottleneck, not from a predetermined op
 
 ## E09 — Softmax V2: warp-shuffle block reductions
 
-Status: **in progress**
+Status: **validated; ready to merge**
 
 ### Hypothesis
 
@@ -974,3 +974,158 @@ Decision:
 - do not invent performance numbers;
 - do not start Softmax V3 before V2 receives real RTX 4090 validation;
 - resume at the clean-build step when Tang is online.
+
+
+### Operation 4 — Tang returned online; clean hardware regression
+
+Tang fetched the GitHub branch and rebuilt from scratch.
+
+```text
+CUDA compiler: 12.8.93
+target: sm_89
+build: PASS
+full repository pytest: 180 passed
+```
+
+No local source edits were used.
+
+### Operation 5 — Compute Sanitizer
+
+Representative shape: `[17, 513]`.
+
+CUDA 12.8 Compute Sanitizer:
+
+```text
+memcheck:
+  0 errors
+
+racecheck:
+  0 hazards / 0 errors
+
+synccheck:
+  0 errors
+```
+
+Observed numerical values in all three runs:
+
+```text
+max_abs_error      = 3.725290298461914e-09
+max_row_sum_error  = 1.1920928955078125e-07
+```
+
+Artifact:
+
+- `reports/data/softmax_v2_compute_sanitizer.txt`
+
+### Operation 6 — ptxas resource capture
+
+CUDA 12.8 / `sm_89`:
+
+```text
+V1 shared-tree:
+  registers/thread: 21
+  shared memory/block: 1024 B
+  spills: 0
+
+V2 warp-shuffle:
+  registers/thread: 23
+  shared memory/block: 32 B
+  spills: 0
+```
+
+V2 trades two additional registers per thread for a **32x reduction in reduction scratch shared memory**.
+
+Artifact:
+
+- `reports/data/softmax_v2_ptxas_sm89.txt`
+
+### Operation 7 — V1 vs V2 benchmark
+
+First matrix:
+
+- 10 warmups;
+- 50 timed repeats;
+- CUDA events;
+- float32;
+- same input per shape.
+
+Representative results:
+
+```text
+128 x 128:
+  V1 11.264 us
+  V2 10.992 us
+
+128 x 4096:
+  V1 13.616 us
+  V2 13.248 us
+
+1024 x 128:
+  V1 14.336 us
+  V2 10.256 us
+
+1024 x 512:
+  V1 16.352 us
+  V2 12.288 us
+
+1024 x 4096:
+  V1 41.984 us
+  V2 39.744 us
+```
+
+Artifact:
+
+- `reports/data/softmax_v1_v2_50_rtx4090_laptop.csv`
+
+### Operation 8 — stable focused benchmark
+
+A second comparison used 20 warmups + 100 timed repeats on the main shape set.
+
+| Shape | V1 shared tree | V2 warp shuffle | V1 -> V2 | torch.softmax | V2 / torch |
+|---:|---:|---:|---:|---:|---:|
+| 128 x 128 | 10.368 us | 10.336 us | ~1.00x | 8.192 us | 1.26x |
+| 128 x 512 | **10.240 us** | 10.592 us | 0.97x | 8.176 us | 1.30x |
+| 128 x 1024 | 10.512 us | 10.400 us | 1.01x | 8.256 us | 1.26x |
+| 128 x 4096 | 13.664 us | **13.216 us** | 1.03x | 9.216 us | 1.43x |
+| 1024 x 128 | 14.336 us | **10.240 us** | **1.40x** | 8.096 us | 1.26x |
+| 1024 x 512 | 16.192 us | **12.256 us** | **1.32x** | 8.192 us | 1.50x |
+| 1024 x 4096 | 41.792 us | **39.600 us** | 1.06x | 36.608 us | 1.08x |
+
+Artifact:
+
+- `reports/data/softmax_v1_v2_100_rtx4090_laptop.csv`
+
+### Interpretation
+
+The hypothesis is partly validated and, importantly, the benefit is shape-dependent.
+
+V2 removes almost all reduction scratch storage:
+
+```text
+1024 B -> 32 B shared memory/block
+```
+
+and materially helps high-row-count cases. The largest observed V1 -> V2 gains in the stable run are:
+
+```text
+1024 x 128:  ~1.40x
+1024 x 512:  ~1.32x
+1024 x 4096: ~1.06x
+```
+
+For 128-row shapes the benefit is small, neutral, or slightly negative. The 128 x 512 case regresses by about 3.4%, so V2 is not promoted as a universal "warp shuffle is always faster" result.
+
+The new shape clue is the **row width versus fixed 256-thread block**. At cols=128, half of a 256-thread block has no column work but still participates in the block-level control flow. V2 made this waste easier to see because the reduction tree is no longer the dominant cost.
+
+### Next action
+
+Softmax V3 should keep the V2 warp-shuffle algorithm but make the block width depend on row width:
+
+```text
+cols <= 32   -> 32 threads
+cols <= 64   -> 64 threads
+cols <= 128  -> 128 threads
+otherwise    -> 256 threads
+```
+
+This isolates launch/work efficiency before adding vectorized loads or changing the three-pass Softmax algorithm.
