@@ -162,13 +162,6 @@ def main() -> None:
                     else 256
                 )
             )
-            v5_uses_packed = (
-                name == "v5_shape_dispatch"
-                and (
-                    (cols <= 64 and rows >= 4096)
-                    or (64 < cols <= 128 and rows >= 2048)
-                )
-            )
             rows_per_block = (
                 8
                 if (
