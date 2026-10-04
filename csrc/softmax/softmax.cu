@@ -7,7 +7,8 @@
 
 namespace {
 
-constexpr int kSoftmaxRowThreads = 128;
+constexpr int kSoftmaxV0Threads = 128;
+constexpr int kSoftmaxV1Threads = 256;
 
 __global__ void softmax_v0_serial_row_kernel(
     const float* input,
@@ -41,6 +42,76 @@ __global__ void softmax_v0_serial_row_kernel(
   }
 }
 
+__global__ void softmax_v1_block_row_kernel(
+    const float* input,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols) {
+  __shared__ float shared[kSoftmaxV1Threads];
+
+  const std::uint64_t row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+
+  const unsigned int tid = threadIdx.x;
+  const float* row_input = input + row * cols;
+  float* row_output = output + row * cols;
+
+  float local_max = -FLT_MAX;
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    local_max = fmaxf(local_max, row_input[col]);
+  }
+
+  shared[tid] = local_max;
+  __syncthreads();
+
+  for (unsigned int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+    if (tid < offset) {
+      shared[tid] = fmaxf(shared[tid], shared[tid + offset]);
+    }
+    __syncthreads();
+  }
+
+  const float row_max = shared[0];
+
+  float local_sum = 0.0F;
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    const float value = expf(row_input[col] - row_max);
+    row_output[col] = value;
+    local_sum += value;
+  }
+
+  shared[tid] = local_sum;
+  __syncthreads();
+
+  for (unsigned int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+    if (tid < offset) {
+      shared[tid] += shared[tid + offset];
+    }
+    __syncthreads();
+  }
+
+  const float inverse_denominator = 1.0F / shared[0];
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    row_output[col] *= inverse_denominator;
+  }
+}
+
+int validate_softmax_arguments(
+    const float* input,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols) {
+  if (rows == 0) {
+    return static_cast<int>(cudaSuccess);
+  }
+  if (input == nullptr || output == nullptr || cols == 0) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  return static_cast<int>(cudaSuccess);
+}
+
 }  // namespace
 
 extern "C" int cuda_operator_softmax_v0(
@@ -49,21 +120,42 @@ extern "C" int cuda_operator_softmax_v0(
     std::uint64_t rows,
     std::uint64_t cols,
     void* stream) {
-  if (rows == 0) {
-    return static_cast<int>(cudaSuccess);
-  }
-  if (input == nullptr || output == nullptr || cols == 0) {
-    return static_cast<int>(cudaErrorInvalidValue);
+  const int validation =
+      validate_softmax_arguments(input, output, rows, cols);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
   }
 
   const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
   const std::uint64_t required_blocks =
-      (rows + kSoftmaxRowThreads - 1) / kSoftmaxRowThreads;
+      (rows + kSoftmaxV0Threads - 1) / kSoftmaxV0Threads;
   const int blocks = static_cast<int>(required_blocks);
 
   softmax_v0_serial_row_kernel<<<
       blocks,
-      kSoftmaxRowThreads,
+      kSoftmaxV0Threads,
+      0,
+      cuda_stream>>>(input, output, rows, cols);
+  return static_cast<int>(cudaGetLastError());
+}
+
+extern "C" int cuda_operator_softmax_v1(
+    const float* input,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    void* stream) {
+  const int validation =
+      validate_softmax_arguments(input, output, rows, cols);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  softmax_v1_block_row_kernel<<<
+      static_cast<unsigned int>(rows),
+      kSoftmaxV1Threads,
       0,
       cuda_stream>>>(input, output, rows, cols);
   return static_cast<int>(cudaGetLastError());
