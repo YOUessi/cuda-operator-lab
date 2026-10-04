@@ -1420,3 +1420,176 @@ Planned evidence:
 - Compute Sanitizer memcheck / racecheck / synccheck;
 - ptxas resources;
 - V3 versus V4 benchmark at 128 / 1024 / 4096 / 16384 rows.
+
+
+### Operation 2 — GitHub implementation
+
+Implemented V4 directly on GitHub.
+
+Packed path for `cols <= 128`:
+
+```text
+256-thread block
+  -> 8 warps
+  -> warp 0 handles row 0
+  -> warp 1 handles row 1
+  -> ...
+  -> warp 7 handles row 7
+```
+
+Each warp performs the entire row Softmax independently:
+
+```text
+lane-stride row max
+  -> warp_reduce_max
+  -> lane-0 broadcast
+  -> lane-stride exp + local sum
+  -> warp_reduce_sum
+  -> lane-0 denominator broadcast
+  -> lane-stride normalize
+```
+
+No shared memory or block-wide synchronization is used by the packed kernel.
+
+Rows are mapped as:
+
+```text
+row = blockIdx.x * 8 + warp_id
+blocks = ceil(rows / 8)
+```
+
+For `cols > 128`, V4 falls back to V3 so wide-row behavior is held constant.
+
+Added:
+
+- `cuda_operator_softmax_v4`;
+- Python V4 binding;
+- benchmark variant with `rows_per_block`;
+- correctness coverage for row-count boundaries 7 / 8 / 9 and width boundaries 31 / 32 / 33, 63 / 64 / 65, 127 / 128 / 129.
+
+### Operation 3 — clean hardware regression
+
+Tang fetched the GitHub branch and rebuilt from scratch.
+
+```text
+CUDA 12.8 / sm_89 build: PASS
+full repository pytest: 229 passed
+```
+
+No local source edits were used.
+
+### Operation 4 — Compute Sanitizer
+
+Representative shapes exercise packed and fallback paths:
+
+```text
+[17,31]
+[17,65]
+[17,127]
+[17,129]
+[9,32]
+```
+
+Final CUDA 12.8 Compute Sanitizer:
+
+```text
+memcheck:  0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+Observed packed-path max absolute error stayed at or below approximately `1.49e-8`; row-sum error stayed below approximately `1.79e-7`.
+
+Artifact:
+
+- `reports/data/softmax_v4_compute_sanitizer.txt`
+
+### Operation 5 — ptxas resource capture
+
+CUDA 12.8 / SM 8.9:
+
+```text
+V4 warp-per-row:
+  registers/thread: 30
+  shared memory/block: 0 B
+  barriers: 0
+  spills: 0
+
+V3 width-aware:
+  registers/thread: 23
+  shared memory/block: 32 B
+  barriers: used
+  spills: 0
+```
+
+The packed path removes all block-level scratch and barriers, at the cost of seven additional registers per thread.
+
+Artifact:
+
+- `reports/data/softmax_v4_ptxas_sm89.txt`
+
+### Operation 6 — stable V3 vs V4 benchmark
+
+Protocol:
+
+- CUDA events;
+- 20 warmups;
+- 100 timed repeats;
+- identical input per shape.
+
+Results:
+
+| Shape | V3 width-aware | V4 warp rows | V3 -> V4 | PyTorch |
+|---:|---:|---:|---:|---:|
+| 128 x 32 | 10.416 us | 10.368 us | ~1.00x | 8.576 us |
+| 128 x 64 | 11.056 us | **10.624 us** | 1.04x | 8.192 us |
+| 128 x 128 | **10.480 us** | 11.152 us | **0.94x** | 8.304 us |
+| 1024 x 32 | 10.560 us | **10.240 us** | 1.03x | 8.192 us |
+| 1024 x 64 | 10.496 us | **10.368 us** | 1.01x | 8.192 us |
+| 1024 x 128 | 10.288 us | **10.240 us** | ~1.00x | 8.192 us |
+| 4096 x 32 | 11.024 us | **10.240 us** | 1.08x | 8.016 us |
+| 4096 x 64 | 11.264 us | **10.576 us** | 1.07x | 8.160 us |
+| 4096 x 128 | 14.336 us | **11.136 us** | **1.29x** | 8.688 us |
+| 16384 x 32 | 19.392 us | **13.952 us** | **1.39x** | 8.192 us |
+| 16384 x 64 | 21.776 us | **15.104 us** | **1.44x** | 9.216 us |
+| 16384 x 128 | 32.752 us | **19.136 us** | **1.71x** | 11.424 us |
+| 1024 x 512 | 12.288 us | 12.288 us | 1.00x | 8.192 us |
+| 1024 x 4096 | 38.912 us | 38.912 us | 1.00x | 37.328 us |
+
+Artifact:
+
+- `reports/data/softmax_v3_v4_warp_rows100_rtx4090.csv`
+
+### Interpretation
+
+The packing hypothesis is validated for high-row-count narrow Softmax.
+
+The gain grows with row count because the packed kernel converts eight separate small row blocks into one 8-warp block while keeping all warps useful.
+
+At `16384 x 128`, V4 improves V3 by about **1.71x**.
+
+However, V4 is not universal:
+
+```text
+128 x 128:
+V3 10.480 us
+V4 11.152 us
+```
+
+That regression is important. Packing eight rows reduces the number of blocks and changes scheduling granularity; when row count is small, the saved block overhead does not always compensate.
+
+### V4 conclusion
+
+Warp-per-row packing is a strong execution layout for sufficiently many narrow rows, but needs a row-count/width-aware dispatcher.
+
+### Next action
+
+Softmax V5 should not invent a threshold.
+
+Before coding the final dispatcher:
+
+1. sweep row count around the crossover separately for widths 32 / 64 / 128;
+2. compare V3 and V4 under the same timing protocol;
+3. choose conservative row thresholds from stable data;
+4. dispatch to V4 only above measured crossover;
+5. keep V3 below threshold and keep the wide-row path unchanged.
