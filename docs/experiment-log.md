@@ -1185,3 +1185,214 @@ Planned validation:
 - Compute Sanitizer memcheck / racecheck / synccheck;
 - ptxas resource capture for each template instantiation if visible;
 - V2 vs V3 benchmark, emphasizing narrow-row/high-row-count shapes.
+
+
+### Operation 2 — GitHub implementation
+
+Implemented V3 directly on GitHub.
+
+Dispatch policy:
+
+```text
+cols <= 32   -> 32 threads
+cols <= 64   -> 64 threads
+cols <= 128  -> 128 threads
+cols > 128   -> reuse the exact V2 256-thread kernel
+```
+
+The wide-row path deliberately calls V2 directly. This avoids mixing width dispatch with unrelated compile-time specialization for rows that should remain unchanged.
+
+Added:
+
+- V3 C ABI;
+- Python binding;
+- benchmark variant;
+- tests around 32 / 64 / 128 boundaries;
+- high-row-count correctness cases.
+
+### Operation 3 — first clean regression
+
+Tang pulled the GitHub branch and rebuilt from scratch.
+
+```text
+build: PASS
+full pytest: 206 passed
+```
+
+### Operation 4 — first Racecheck exposed a one-warp shared-memory hazard
+
+The first V3 sanitizer sweep exercised all dispatch buckets:
+
+```text
+[17,31]
+[17,65]
+[17,127]
+[17,129]
+[17,513]
+```
+
+memcheck was clean, but Racecheck reported the 32-thread instantiation:
+
+```text
+softmax_v3_width_row_kernel<32>
+2 race warnings displayed
+68 hazards grouped in each warning
+```
+
+The bug was not exposed by the 206 numerical tests.
+
+Root cause:
+
+- a 32-thread block is exactly one warp;
+- the generic block reduction still used `warp_partials[0]`;
+- lane 0 rewrote the shared location after other lanes had read it;
+- under independent thread scheduling this shared-memory handoff was not synchronization-safe.
+
+Artifact:
+
+- `reports/data/softmax_v3_racecheck_failure.txt`
+
+### Operation 5 — GitHub-side one-warp fix
+
+For `BlockThreads == 32`, shared memory is no longer used by the reduction helper.
+
+The one-warp path now performs:
+
+```text
+warp reduce via __shfl_down_sync
+  -> lane 0 owns final register value
+  -> __shfl_sync broadcast from lane 0
+```
+
+Commit:
+
+```text
+0fcda7c
+fix: avoid one-warp shared-memory race in softmax v3
+```
+
+### Operation 6 — post-fix clean regression and sanitizer
+
+Tang fetched the fix and rebuilt cleanly.
+
+```text
+build: PASS
+full pytest: 206 passed
+```
+
+Final Compute Sanitizer across all four dispatch regions:
+
+```text
+memcheck:  0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+Maximum observed element error stayed below approximately `2.24e-8`.
+
+Maximum observed row-sum error stayed below approximately `2.38e-7`.
+
+Artifact:
+
+- `reports/data/softmax_v3_compute_sanitizer.txt`
+
+### Operation 7 — isolate width dispatch from wide-row codegen
+
+An early benchmark showed an apparent improvement even at width 4096. That would have confounded the experiment because the first V3 draft also used a templated 256-thread kernel, allowing compiler specialization unrelated to width dispatch.
+
+The wide-row path was therefore changed to invoke the exact V2 256-thread kernel for `cols > 128`.
+
+After this correction:
+
+- 1024 x 512: V2 = V3 = 12.288 us;
+- 1024 x 4096: V2 = V3 = 38.912 us.
+
+This confirms the final comparison isolates narrow-row thread-count dispatch.
+
+### Operation 8 — final ptxas
+
+CUDA 12.8 / SM 8.9:
+
+```text
+V3 <32 threads>:
+  registers/thread: 28
+  shared memory: 0 B
+  spills: 0
+  barriers: 0
+
+V3 <64 threads>:
+  registers/thread: 32
+  shared memory: 8 B
+  spills: 0
+
+V3 <128 threads>:
+  registers/thread: 32
+  shared memory: 16 B
+  spills: 0
+
+V2 fixed 256:
+  registers/thread: 23
+  shared memory: 32 B
+  spills: 0
+```
+
+Artifact:
+
+- `reports/data/softmax_v3_ptxas_sm89.txt`
+
+### Operation 9 — final width-dispatch benchmark
+
+Protocol:
+
+- CUDA events;
+- 20 warmups;
+- 100 timed repeats;
+- V2 and V3 on identical inputs.
+
+Key results:
+
+| Shape | V2 fixed 256 | V3 width dispatch | V2 -> V3 | PyTorch |
+|---:|---:|---:|---:|---:|
+| 1024 x 32 | 10.240 us | 10.240 us | 1.00x | 8.192 us |
+| 1024 x 64 | 11.264 us | **10.240 us** | 1.10x | 8.000 us |
+| 1024 x 128 | 10.400 us | **10.240 us** | 1.02x | 7.936 us |
+| 4096 x 32 | 17.408 us | **10.240 us** | **1.70x** | 7.872 us |
+| 4096 x 64 | 17.408 us | **12.064 us** | **1.44x** | 8.096 us |
+| 4096 x 128 | 18.432 us | **15.184 us** | **1.21x** | 8.208 us |
+| 16384 x 32 | 46.880 us | **17.408 us** | **2.69x** | 8.000 us |
+| 16384 x 64 | 47.328 us | **23.552 us** | **2.01x** | 9.056 us |
+| 16384 x 128 | 49.264 us | **36.448 us** | **1.35x** | 11.184 us |
+| 1024 x 512 | 12.288 us | 12.288 us | 1.00x | 8.096 us |
+| 1024 x 4096 | 38.912 us | 38.912 us | 1.00x | 36.864 us |
+
+Artifact:
+
+- `reports/data/softmax_v2_v3_width_dispatch100_rtx4090.csv`
+
+### Interpretation
+
+The V2 clue was correct, but the effect appears only when enough row blocks are present for oversized blocks to create meaningful scheduling waste.
+
+For 1024 rows the gain is small to moderate.
+
+For 4096 rows the width-aware policy becomes clearly useful.
+
+For 16384 x 32, cutting a row block from 256 threads to 32 threads improves latency by about **2.69x**.
+
+Wide rows are unchanged by construction because V3 reuses V2 for `cols > 128`.
+
+### V3 conclusion
+
+Width-aware block sizing is validated for narrow, high-row-count Softmax workloads.
+
+The experiment also produced another sanitizer-only synchronization fix for the one-warp case, reinforcing the rule that every new execution geometry must be rechecked with Racecheck.
+
+### Next action
+
+The next Softmax experiment should target data movement / pass count rather than more reduction tuning. Candidate V4 direction:
+
+- keep V3 dispatch;
+- investigate vectorized aligned loads/stores for wider rows, or
+- fuse the temporary exponent write/read pattern if a clean isolated experiment can be defined.
+
+Do not combine both in the same round.
