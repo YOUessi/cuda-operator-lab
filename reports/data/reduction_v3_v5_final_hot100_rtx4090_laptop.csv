@@ -1,0 +1,11 @@
+operator,variant,dtype,cache_mode,l2_bytes,flush_bytes,input_ptr_mod16,n,bytes_read,median_us,p50_us,p95_us,logical_input_gbps,torch_median_us,torch_p95_us,slowdown_vs_torch,abs_error,rel_error
+reduction_sum,v3_warp_shuffle,float32,hot,67108864,0,0,262144,1048576,12.288,12.288,0,85.333,12.288,0,1.00,0.0,5.971e-08
+reduction_sum,v5_shape_aware_float4,float32,hot,67108864,0,0,262144,1048576,12.448,12.448,0,84.237,12.288,0,1.01,0.0,5.971e-08
+reduction_sum,v3_warp_shuffle,float32,hot,67108864,0,0,524288,2097152,13.312,13.312,0,157.538,12.288,0,1.08,0.0,1.191e-07
+reduction_sum,v5_shape_aware_float4,float32,hot,67108864,0,0,524288,2097152,12.608,12.608,0,166.335,12.288,0,1.03,0.0,2.382e-07
+reduction_sum,v3_warp_shuffle,float32,hot,67108864,0,0,1048576,4194304,12.976,12.976,0,323.236,12.096,0,1.07,0.0,1.192e-07
+reduction_sum,v5_shape_aware_float4,float32,hot,67108864,0,0,1048576,4194304,13.056,13.056,0,321.255,12.096,0,1.08,0.0,2.384e-07
+reduction_sum,v3_warp_shuffle,float32,hot,67108864,0,0,4194304,16777216,18.080,18.080,0,927.943,16.384,0,1.10,0.0,2.384e-07
+reduction_sum,v5_shape_aware_float4,float32,hot,67108864,0,0,4194304,16777216,15.360,15.360,0,1092.267,16.384,0,0.94,0.0,1.192e-07
+reduction_sum,v3_warp_shuffle,float32,hot,67108864,0,0,16777216,67108864,40.960,40.960,0,1638.400,33.760,0,1.21,0.0,2.384e-07
+reduction_sum,v5_shape_aware_float4,float32,hot,67108864,0,0,16777216,67108864,33.792,33.792,0,1985.939,33.760,0,1.00,0.0,4.768e-07
