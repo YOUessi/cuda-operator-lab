@@ -1593,3 +1593,45 @@ Before coding the final dispatcher:
 3. choose conservative row thresholds from stable data;
 4. dispatch to V4 only above measured crossover;
 5. keep V3 below threshold and keep the wide-row path unchanged.
+
+
+---
+
+## E12 — Softmax V5: empirical V3/V4 shape dispatcher
+
+Status: **in progress**
+
+### Hypothesis
+
+V4 warp-per-row packing is clearly superior for high-row-count narrow matrices, but the 128 x 128 case regresses. Therefore the final default policy should dispatch between V3 and V4 from measured row-count/width crossover data rather than assuming all `cols <= 128` should use the packed path.
+
+### Operation 1 — experiment branch and crossover plan
+
+Created branch:
+
+```text
+feat/softmax-v5-shape-dispatch
+```
+
+Before changing code, sweep V3 versus V4 at widths:
+
+```text
+32, 64, 128
+```
+
+and row counts:
+
+```text
+128, 256, 512, 1024, 2048, 4096, 8192, 16384
+```
+
+Protocol:
+
+- same RTX 4090 Laptop;
+- float32;
+- 20 warmups;
+- 100 CUDA-event timed repeats;
+- same input per shape;
+- no source change during crossover measurement.
+
+Only after the sweep will thresholds be encoded.
