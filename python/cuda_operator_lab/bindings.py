@@ -83,6 +83,18 @@ class _Library:
             ]
             function.restype = ctypes.c_int
 
+        self.handle.cuda_operator_layernorm_v0.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_float,
+            ctypes.c_void_p,
+        ]
+        self.handle.cuda_operator_layernorm_v0.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -541,3 +553,76 @@ def rmsnorm_v4(
 ) -> torch.Tensor:
     out = torch.empty_like(x)
     return rmsnorm_v4_into(x, weight, out, eps)
+
+def _validate_layernorm_input(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+) -> None:
+    if not x.is_cuda or not weight.is_cuda or not bias.is_cuda:
+        raise ValueError("layernorm input, weight, and bias must be CUDA tensors")
+    if x.ndim != 2:
+        raise ValueError("layernorm input must be 2-D [rows, cols]")
+    if weight.ndim != 1 or weight.shape[0] != x.shape[1]:
+        raise ValueError("layernorm weight must be 1-D with length equal to cols")
+    if bias.ndim != 1 or bias.shape[0] != x.shape[1]:
+        raise ValueError("layernorm bias must be 1-D with length equal to cols")
+    if x.dtype != torch.float32 or weight.dtype != torch.float32 or bias.dtype != torch.float32:
+        raise TypeError("layernorm currently supports float32 only")
+    if not x.is_contiguous() or not weight.is_contiguous() or not bias.is_contiguous():
+        raise ValueError("layernorm input, weight, and bias must be contiguous")
+    if x.shape[1] == 0:
+        raise ValueError("layernorm requires cols > 0")
+    if eps <= 0:
+        raise ValueError("layernorm eps must be positive")
+
+
+def _validate_layernorm_output(x: torch.Tensor, out: torch.Tensor) -> None:
+    if not out.is_cuda or out.device != x.device:
+        raise ValueError("layernorm output must be a CUDA tensor on the same device")
+    if out.dtype != torch.float32 or out.shape != x.shape or not out.is_contiguous():
+        raise ValueError(
+            "layernorm output must be contiguous float32 with the same shape"
+        )
+
+
+def layernorm_v0_into(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    out: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Launch V0: one CUDA thread serially computes one LayerNorm row."""
+    _validate_layernorm_input(x, weight, bias, eps)
+    _validate_layernorm_output(x, out)
+
+    rows, cols = x.shape
+    if rows == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_layernorm_v0(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(weight.data_ptr()),
+        ctypes.c_void_p(bias.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(rows),
+        ctypes.c_uint64(cols),
+        ctypes.c_float(eps),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def layernorm_v0(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    out = torch.empty_like(x)
+    return layernorm_v0_into(x, weight, bias, out, eps)
