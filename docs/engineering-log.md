@@ -629,3 +629,46 @@ Selected V1 -> V2:
 Shared reduction scratch falls from 1024 B to 32 B, but wide low-row workloads are already close to memory/math limits.
 
 Next: evaluate Welford online mean/variance to combine statistics into one numerically stable pass before vectorized IO.
+
+## LayerNorm V3 Welford statistics
+
+V3 evaluates whether online Welford statistics can replace the separate V2 mean and variance passes.
+
+Final retained implementation:
+
+- float32 Welford state;
+- one input traversal for `count / mean / M2`;
+- warp-level Welford combination;
+- one block per row;
+- scalar IO;
+- affine output unchanged.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **443 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 30 registers/thread, 96 B shared memory/block, 0 spills.
+
+Performance result: V3 is not a general performance win over V2.
+
+Representative V2 -> V3:
+
+- 128 x 512: 11.264 us -> 11.264 us;
+- 128 x 4096: 14.336 us -> 14.336 us;
+- 1024 x 512: 12.768 us -> 14.336 us (regression);
+- 1024 x 4096: 31.744 us -> 31.552 us (small win);
+- 128 x 8192: 19.456 us -> 19.744 us (small regression).
+
+Numerical stability experiment on inputs near `1000 + N(0, 0.1)`, using float64 LayerNorm as truth:
+
+- PyTorch float32 max abs error: ~2.39e-3;
+- V2 two-pass float32: ~2.54e-3;
+- V3 float Welford: ~2.35e-3;
+- experimental double-Welford: ~1.01e-3.
+
+The double-Welford experiment was not retained: it used 48 registers/thread, 160 B shared memory, and caused roughly 5–12x performance regressions on representative shapes.
+
+Conclusion: Welford is useful as a numerical-method study, but on this GPU the float32 version does not provide a robust speedup and the double version is too expensive. The next performance target is vectorized IO while retaining the faster V2 two-pass statistics.
