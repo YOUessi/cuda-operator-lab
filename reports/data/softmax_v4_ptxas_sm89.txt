@@ -1,0 +1,26 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438134softmax_v4_packed_warp_rows_kernelEPKfPfmm' for 'sm_89'
+ptxas info    : Function properties for _ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438134softmax_v4_packed_warp_rows_kernelEPKfPfmm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 30 registers, used 0 barriers, 384 bytes cmem[0]
+ptxas info    : Compile time = 9.552 ms
+ptxas info    : Compiling entry function '_ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438129softmax_v3_width_aware_kernelEPKfPfmm' for 'sm_89'
+ptxas info    : Function properties for _ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438129softmax_v3_width_aware_kernelEPKfPfmm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 23 registers, used 1 barriers, 32 bytes smem, 384 bytes cmem[0]
+ptxas info    : Compile time = 7.937 ms
+ptxas info    : Compiling entry function '_ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438126softmax_v2_warp_row_kernelEPKfPfmm' for 'sm_89'
+ptxas info    : Function properties for _ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438126softmax_v2_warp_row_kernelEPKfPfmm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 23 registers, used 1 barriers, 32 bytes smem, 384 bytes cmem[0]
+ptxas info    : Compile time = 7.360 ms
+ptxas info    : Compiling entry function '_ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438127softmax_v1_block_row_kernelEPKfPfmm' for 'sm_89'
+ptxas info    : Function properties for _ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438127softmax_v1_block_row_kernelEPKfPfmm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 21 registers, used 1 barriers, 1024 bytes smem, 384 bytes cmem[0]
+ptxas info    : Compile time = 4.384 ms
+ptxas info    : Compiling entry function '_ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438128softmax_v0_serial_row_kernelEPKfPfmm' for 'sm_89'
+ptxas info    : Function properties for _ZN43_GLOBAL__N__fc36f7a2_10_softmax_cu_df29438128softmax_v0_serial_row_kernelEPKfPfmm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 24 registers, used 0 barriers, 384 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compile time = 6.916 ms
