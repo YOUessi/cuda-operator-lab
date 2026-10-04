@@ -1,0 +1,24 @@
+Softmax V3 initial Racecheck failure before fix
+
+The first V3 implementation used the shared warp-partial buffer even when
+BlockThreads == 32 (a one-warp block).
+
+Racecheck on shape [17,31] reported:
+  2 race warnings displayed
+  each warning grouped 68 hazards
+
+Representative report:
+  Read access in softmax_v3_width_row_kernel<32>
+  racing with Write access in softmax_v3_width_row_kernel<32>
+
+Root cause:
+  the single warp read warp_partials[0] and lane 0 later rewrote the same
+  shared location without a synchronization point that Racecheck could prove
+  safe under independent thread scheduling.
+
+GitHub fix:
+  for kBlockWarps == 1, avoid shared-memory handoff completely;
+  reduce with __shfl_down_sync and broadcast lane 0 via __shfl_sync.
+
+Post-fix Racecheck:
+  0 hazards / 0 errors / 0 warnings.
