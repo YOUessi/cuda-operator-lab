@@ -8,7 +8,78 @@
 namespace {
 
 constexpr int kSoftmaxV0Threads = 128;
-constexpr int kSoftmaxV1Threads = 256;
+constexpr int kSoftmaxBlockThreads = 256;
+constexpr int kWarpSize = 32;
+constexpr int kWarpsPerBlock = kSoftmaxBlockThreads / kWarpSize;
+constexpr unsigned int kFullWarpMask = 0xffffffffU;
+
+__device__ __forceinline__ float warp_reduce_max(float value) {
+  for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+    value = fmaxf(value, __shfl_down_sync(kFullWarpMask, value, offset));
+  }
+  return value;
+}
+
+__device__ __forceinline__ float warp_reduce_sum(float value) {
+  for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+    value += __shfl_down_sync(kFullWarpMask, value, offset);
+  }
+  return value;
+}
+
+__device__ __forceinline__ float block_reduce_max(
+    float value,
+    float* warp_values) {
+  const int lane = threadIdx.x & (kWarpSize - 1);
+  const int warp_id = threadIdx.x / kWarpSize;
+
+  value = warp_reduce_max(value);
+  if (lane == 0) {
+    warp_values[warp_id] = value;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    float block_value =
+        lane < kWarpsPerBlock ? warp_values[lane] : -FLT_MAX;
+    block_value = warp_reduce_max(block_value);
+    if (lane == 0) {
+      warp_values[0] = block_value;
+    }
+  }
+  __syncthreads();
+
+  const float result = warp_values[0];
+
+  // The same shared buffer is reused immediately for the denominator
+  // reduction. Ensure every warp has loaded the max before any warp writes it.
+  __syncthreads();
+  return result;
+}
+
+__device__ __forceinline__ float block_reduce_sum(
+    float value,
+    float* warp_values) {
+  const int lane = threadIdx.x & (kWarpSize - 1);
+  const int warp_id = threadIdx.x / kWarpSize;
+
+  value = warp_reduce_sum(value);
+  if (lane == 0) {
+    warp_values[warp_id] = value;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    float block_value = lane < kWarpsPerBlock ? warp_values[lane] : 0.0F;
+    block_value = warp_reduce_sum(block_value);
+    if (lane == 0) {
+      warp_values[0] = block_value;
+    }
+  }
+  __syncthreads();
+
+  return warp_values[0];
+}
 
 __global__ void softmax_v0_serial_row_kernel(
     const float* input,
@@ -31,9 +102,9 @@ __global__ void softmax_v0_serial_row_kernel(
 
   float denominator = 0.0F;
   for (std::uint64_t col = 0; col < cols; ++col) {
-    const float value = expf(row_input[col] - row_max);
-    row_output[col] = value;
-    denominator += value;
+    const float exp_value = expf(row_input[col] - row_max);
+    row_output[col] = exp_value;
+    denominator += exp_value;
   }
 
   const float inverse_denominator = 1.0F / denominator;
@@ -47,7 +118,7 @@ __global__ void softmax_v1_block_row_kernel(
     float* output,
     std::uint64_t rows,
     std::uint64_t cols) {
-  __shared__ float shared[kSoftmaxV1Threads];
+  __shared__ float shared[kSoftmaxBlockThreads];
 
   const std::uint64_t row = blockIdx.x;
   if (row >= rows) {
@@ -74,16 +145,13 @@ __global__ void softmax_v1_block_row_kernel(
   }
 
   const float row_max = shared[0];
-
-  // shared[] is reused for the denominator reduction below. Every warp must
-  // finish reading shared[0] before thread 0 is allowed to overwrite it.
   __syncthreads();
 
   float local_sum = 0.0F;
   for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
-    const float value = expf(row_input[col] - row_max);
-    row_output[col] = value;
-    local_sum += value;
+    const float exp_value = expf(row_input[col] - row_max);
+    row_output[col] = exp_value;
+    local_sum += exp_value;
   }
 
   shared[tid] = local_sum;
@@ -97,6 +165,42 @@ __global__ void softmax_v1_block_row_kernel(
   }
 
   const float inverse_denominator = 1.0F / shared[0];
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    row_output[col] *= inverse_denominator;
+  }
+}
+
+__global__ void softmax_v2_warp_row_kernel(
+    const float* input,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols) {
+  __shared__ float warp_values[kWarpsPerBlock];
+
+  const std::uint64_t row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+
+  const unsigned int tid = threadIdx.x;
+  const float* row_input = input + row * cols;
+  float* row_output = output + row * cols;
+
+  float local_max = -FLT_MAX;
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    local_max = fmaxf(local_max, row_input[col]);
+  }
+  const float row_max = block_reduce_max(local_max, warp_values);
+
+  float local_sum = 0.0F;
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    const float exp_value = expf(row_input[col] - row_max);
+    row_output[col] = exp_value;
+    local_sum += exp_value;
+  }
+  const float denominator = block_reduce_sum(local_sum, warp_values);
+
+  const float inverse_denominator = 1.0F / denominator;
   for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
     row_output[col] *= inverse_denominator;
   }
@@ -156,10 +260,30 @@ extern "C" int cuda_operator_softmax_v1(
   }
 
   const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
-
   softmax_v1_block_row_kernel<<<
       static_cast<unsigned int>(rows),
-      kSoftmaxV1Threads,
+      kSoftmaxBlockThreads,
+      0,
+      cuda_stream>>>(input, output, rows, cols);
+  return static_cast<int>(cudaGetLastError());
+}
+
+extern "C" int cuda_operator_softmax_v2(
+    const float* input,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    void* stream) {
+  const int validation =
+      validate_softmax_arguments(input, output, rows, cols);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  softmax_v2_warp_row_kernel<<<
+      static_cast<unsigned int>(rows),
+      kSoftmaxBlockThreads,
       0,
       cuda_stream>>>(input, output, rows, cols);
   return static_cast<int>(cudaGetLastError());
