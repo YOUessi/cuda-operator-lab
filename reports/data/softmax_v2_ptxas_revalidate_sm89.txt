@@ -1,0 +1,18 @@
+CUDA 12.8 / SM 8.9 ptxas revalidation
+
+softmax_v2_warp_row_kernel:
+  registers/thread: 23
+  shared memory/block: 32 bytes
+  spills: 0
+  stack frame: 0 bytes
+  barrier resource: used
+
+softmax_v1_block_row_kernel:
+  registers/thread: 21
+  shared memory/block: 1024 bytes
+  spills: 0
+
+softmax_v0_serial_row_kernel:
+  registers/thread: 24
+  shared memory/block: 0 bytes
+  spills: 0
