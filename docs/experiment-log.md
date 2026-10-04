@@ -1129,3 +1129,59 @@ otherwise    -> 256 threads
 ```
 
 This isolates launch/work efficiency before adding vectorized loads or changing the three-pass Softmax algorithm.
+
+
+---
+
+## E10 — Softmax V3: width-aware thread-count dispatch
+
+Status: **in progress**
+
+### Hypothesis
+
+Softmax V2 keeps a fixed 256-thread block for every row. This is wasteful for narrow rows:
+
+```text
+cols = 128
+threads = 256
+=> half the block has no column work
+```
+
+After warp-shuffle removed most reduction-tree overhead, this launch/work mismatch is now visible.
+
+### Operation 1 — experiment branch and scope lock
+
+Created branch:
+
+```text
+feat/softmax-v3-width-dispatch
+```
+
+V3 will keep all V2 math and memory passes unchanged:
+
+- numerically stable row max;
+- parallel exp + denominator accumulation;
+- parallel normalize;
+- two-level warp-shuffle reductions;
+- one block per row;
+- float32 API.
+
+Only block width changes by row width:
+
+```text
+cols <= 32   ->  32 threads
+cols <= 64   ->  64 threads
+cols <= 128  -> 128 threads
+otherwise    -> 256 threads
+```
+
+No vectorized loads, no fused passes, and no alternate block mapping are introduced in this experiment.
+
+Planned validation:
+
+- clean CUDA 12.8 / SM 8.9 build;
+- full repository pytest;
+- boundary tests around 32 / 64 / 128;
+- Compute Sanitizer memcheck / racecheck / synccheck;
+- ptxas resource capture for each template instantiation if visible;
+- V2 vs V3 benchmark, emphasizing narrow-row/high-row-count shapes.
