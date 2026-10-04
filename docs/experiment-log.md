@@ -2599,3 +2599,68 @@ max_abs_error: 1.14e-5
 The baseline intentionally exposes the cost of three serial row passes. The next isolated experiment is V1: one block per row with shared-memory reductions for mean and variance, followed by parallel affine output.
 
 Status: **validated; ready to merge**.
+
+## E19 — LayerNorm V1: block-parallel mean/variance reductions
+
+Status: **validated; ready to merge**
+
+### Hypothesis
+
+LayerNorm V0 is dominated by serial hidden-width work. V1 parallelizes only the row dimension internals while holding the math and scalar IO constant.
+
+### Design
+
+```text
+one 256-thread block per row
+  -> strided local sum
+  -> shared-memory tree -> mean
+  -> barrier before shared-buffer reuse
+  -> strided local squared deviation
+  -> shared-memory tree -> variance
+  -> inverse std
+  -> parallel affine output
+```
+
+The explicit barrier after all threads load the mean preserves the same shared-buffer reuse safety lesson learned from Softmax V1.
+
+### Validation
+
+```text
+clean CUDA 12.8 / sm_89 build: PASS
+full pytest: 396 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+ptxas:
+
+```text
+V0:
+  24 registers/thread
+  0 B shared memory
+
+V1:
+  21 registers/thread
+  1024 B shared memory/block
+  0 spills
+```
+
+Selected timings:
+
+| Shape | V0 | V1 | PyTorch |
+|---:|---:|---:|---:|
+| 128 x 512 | 189.408 us | 10.560 us | 10.528 us |
+| 128 x 1024 | 355.088 us | 11.264 us | 10.624 us |
+| 128 x 4096 | 1316.896 us | 14.384 us | 13.056 us |
+| 1024 x 4096 | 1084.416 us | 34.736 us | 24.576 us |
+| 128 x 8192 | 2162.784 us | 20.144 us | 15.360 us |
+
+Artifacts:
+
+- `reports/data/layernorm_v0_v1_rtx4090.csv`
+- `reports/data/layernorm_v1_ptxas_sm89.txt`
+
+### Next action
+
+V2 keeps the two-pass mean/variance algorithm and scalar IO, but replaces both 256-entry shared-memory trees with two-level warp-shuffle reductions. This isolates synchronization/reduction overhead before introducing Welford or vectorized IO.

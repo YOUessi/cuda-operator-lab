@@ -7,6 +7,7 @@
 namespace {
 
 constexpr int kLayerNormV0Threads = 128;
+constexpr int kLayerNormV1Threads = 256;
 
 __global__ void layernorm_v0_serial_row_kernel(
     const float* input,
@@ -42,6 +43,80 @@ __global__ void layernorm_v0_serial_row_kernel(
   const float inverse_std = rsqrtf(variance + eps);
 
   for (std::uint64_t col = 0; col < cols; ++col) {
+    const float normalized = (row_input[col] - mean) * inverse_std;
+    row_output[col] = normalized * weight[col] + bias[col];
+  }
+}
+
+__global__ void layernorm_v1_block_row_kernel(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps) {
+  __shared__ float shared[kLayerNormV1Threads];
+
+  const std::uint64_t row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+
+  const unsigned int tid = threadIdx.x;
+  const float* row_input = input + row * cols;
+  float* row_output = output + row * cols;
+
+  float local_sum = 0.0F;
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    local_sum += row_input[col];
+  }
+
+  shared[tid] = local_sum;
+  __syncthreads();
+
+  for (unsigned int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+    if (tid < offset) {
+      shared[tid] += shared[tid + offset];
+    }
+    __syncthreads();
+  }
+
+  if (tid == 0) {
+    shared[0] /= static_cast<float>(cols);
+  }
+  __syncthreads();
+
+  const float mean = shared[0];
+
+  // All threads must consume shared[0] before the shared buffer is reused
+  // for the variance reduction.
+  __syncthreads();
+
+  float local_squared_deviation = 0.0F;
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    const float centered = row_input[col] - mean;
+    local_squared_deviation += centered * centered;
+  }
+
+  shared[tid] = local_squared_deviation;
+  __syncthreads();
+
+  for (unsigned int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+    if (tid < offset) {
+      shared[tid] += shared[tid + offset];
+    }
+    __syncthreads();
+  }
+
+  if (tid == 0) {
+    const float variance = shared[0] / static_cast<float>(cols);
+    shared[0] = rsqrtf(variance + eps);
+  }
+  __syncthreads();
+
+  const float inverse_std = shared[0];
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
     const float normalized = (row_input[col] - mean) * inverse_std;
     row_output[col] = normalized * weight[col] + bias[col];
   }
@@ -92,6 +167,31 @@ extern "C" int cuda_operator_layernorm_v0(
   layernorm_v0_serial_row_kernel<<<
       static_cast<unsigned int>(required_blocks),
       kLayerNormV0Threads,
+      0,
+      cuda_stream>>>(input, weight, bias, output, rows, cols, eps);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_layernorm_v1(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps,
+    void* stream) {
+  const int validation =
+      validate_layernorm_arguments(input, weight, bias, output, rows, cols, eps);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  layernorm_v1_block_row_kernel<<<
+      static_cast<unsigned int>(rows),
+      kLayerNormV1Threads,
       0,
       cuda_stream>>>(input, weight, bias, output, rows, cols, eps);
   return static_cast<int>(cudaGetLastError());
