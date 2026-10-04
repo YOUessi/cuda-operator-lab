@@ -1,0 +1,6 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e45fused_residual_layernorm_v0_serial_row_kernelEPKfS1_S1_S1_Pfmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e45fused_residual_layernorm_v0_serial_row_kernelEPKfS1_S1_S1_Pfmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, used 0 barriers, 412 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compile time = 12.176 ms

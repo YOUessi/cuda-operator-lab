@@ -75,3 +75,24 @@ def layernorm(
         bias=bias,
         eps=eps,
     )
+
+
+def fused_residual_layernorm(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Trusted float32 residual-add + LayerNorm reference."""
+    if x.shape != residual.shape or x.ndim != 2:
+        raise ValueError("x and residual must have the same 2-D shape")
+    if x.dtype != torch.float32 or residual.dtype != torch.float32:
+        raise TypeError("fused residual layernorm currently supports float32 only")
+    return torch.nn.functional.layer_norm(
+        x + residual,
+        normalized_shape=(x.shape[1],),
+        weight=weight,
+        bias=bias,
+        eps=eps,
+    )

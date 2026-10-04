@@ -6,6 +6,7 @@ add_library(cuda_operator_lab SHARED
   softmax/softmax.cu
   rmsnorm/rmsnorm.cu
   layernorm/layernorm.cu
+  fused_residual_layernorm/fused_residual_layernorm.cu
 )
 
 target_include_directories(cuda_operator_lab
@@ -14,6 +15,7 @@ target_include_directories(cuda_operator_lab
     ${CMAKE_CURRENT_SOURCE_DIR}/softmax
     ${CMAKE_CURRENT_SOURCE_DIR}/rmsnorm
     ${CMAKE_CURRENT_SOURCE_DIR}/layernorm
+    ${CMAKE_CURRENT_SOURCE_DIR}/fused_residual_layernorm
 )
 
 target_link_libraries(cuda_operator_lab
