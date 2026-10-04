@@ -5,6 +5,7 @@ add_library(cuda_operator_lab SHARED
   reduction/reduction.cu
   softmax/softmax.cu
   rmsnorm/rmsnorm.cu
+  layernorm/layernorm.cu
 )
 
 target_include_directories(cuda_operator_lab
@@ -12,6 +13,7 @@ target_include_directories(cuda_operator_lab
     ${CMAKE_CURRENT_SOURCE_DIR}/reduction
     ${CMAKE_CURRENT_SOURCE_DIR}/softmax
     ${CMAKE_CURRENT_SOURCE_DIR}/rmsnorm
+    ${CMAKE_CURRENT_SOURCE_DIR}/layernorm
 )
 
 target_link_libraries(cuda_operator_lab
