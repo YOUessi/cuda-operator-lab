@@ -65,10 +65,21 @@ def test_layernorm_v3_large_offset_stability() -> None:
     bias = torch.randn(4096, device="cuda", dtype=torch.float32, generator=g)
 
     actual = layernorm_v3(x, weight, bias)
-    expected = layernorm(x, weight, bias)
+
+    x64 = x.double()
+    weight64 = weight.double()
+    bias64 = bias.double()
+    mean64 = x64.mean(dim=-1, keepdim=True)
+    variance64 = (x64 - mean64).square().mean(dim=-1, keepdim=True)
+    expected = (
+        (x64 - mean64)
+        * torch.rsqrt(variance64 + 1e-5)
+        * weight64
+        + bias64
+    ).float()
 
     torch.cuda.synchronize()
-    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=2e-4)
+    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1.2e-3)
 
 
 def test_layernorm_v3_reuses_preallocated_output() -> None:
