@@ -548,3 +548,24 @@ V0 intentionally uses one CUDA thread per row:
 - serial affine output `(x - mean) * inv_std * weight + bias`.
 
 The purpose is to expose the cost of two row-wise reductions plus affine output before introducing cooperative block reduction or Welford.
+
+### LayerNorm V0 validation
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **373 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 24 registers/thread, 0 B shared memory, 0 spills.
+
+Representative performance versus PyTorch `layer_norm`:
+
+- 128 x 512: 185.344 us vs 10.464 us;
+- 128 x 1024: 356.096 us vs 10.592 us;
+- 128 x 4096: 1317.088 us vs 11.264 us (~116.9x slower);
+- 128 x 8192: 2161.056 us vs 15.360 us (~140.7x slower);
+- 1024 x 4096: 1086.416 us vs 24.576 us (~44.2x slower).
+
+Conclusion: the serial mean + serial variance + serial affine passes are the dominant bottleneck. V1 should parallelize hidden-width work inside each row while keeping scalar IO and a simple shared-memory reduction.
