@@ -359,10 +359,12 @@ extern "C" int cuda_operator_rmsnorm_v4(
   }
 
   bool use_float4 = false;
-  if (cols == 512 || cols == 1024) {
-    use_float4 = rows >= 1024;
+  if (cols == 512) {
+    use_float4 = rows >= 1536;
+  } else if (cols == 1024) {
+    use_float4 = rows == 1024;
   } else if (cols == 4096) {
-    use_float4 = rows <= 1536;
+    use_float4 = rows <= 512;
   } else if (cols == 8192) {
     use_float4 = rows <= 1024;
   }
