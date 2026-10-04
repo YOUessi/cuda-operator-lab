@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Softmax V0
+## Current milestone: Softmax V1
 
 Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
 
@@ -131,7 +131,7 @@ CUDA 12.8 Compute Sanitizer on a representative `N=1,000,003` signed float32 inp
 - unaligned contiguous V4 fallback memcheck: 0 errors
 
 
-### Softmax V0 baseline
+### Softmax V0 -> V1
 
 The second operator has started with an intentionally simple row-wise baseline:
 
@@ -148,7 +148,9 @@ Clean RTX 4090 Laptop validation:
 - Compute Sanitizer memcheck / racecheck / synccheck: clean;
 - ptxas: 24 registers/thread, 0 spills.
 
-The width bottleneck is intentionally obvious: `128 × 4096` takes **1,595.392 us** versus **9.328 us** for `torch.softmax` (~171x slower). This establishes the baseline for one-block-per-row parallel Softmax V1.
+The V0 width bottleneck is intentionally obvious: `128 × 4096` takes about 1.6 ms. V1 assigns one 256-thread block per row and uses shared-memory max/sum reductions. The post-race-fix benchmark reduces `128 × 4096` from **1,614.752 us to 14.336 us** (>112x), while `1024 × 4096` reaches **37.888 us vs 36.960 us** for PyTorch.
+
+V1 hardware validation also found and fixed a shared-memory reuse race through Compute Sanitizer Racecheck; post-fix memcheck/racecheck/synccheck are clean.
 
 Detailed operation history and raw artifacts are in `docs/experiment-log.md` and `reports/data/softmax_v0_*`.
 
