@@ -58,23 +58,16 @@ def percentile(values: list[float], q: float) -> float:
     return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
 
 
-def timed_launch(
-    fn,
-    flush: torch.Tensor,
-    repeats: int,
-) -> list[float]:
+def timed_one(fn, flush: torch.Tensor) -> float:
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
-    samples: list[float] = []
-    for _ in range(repeats):
-        flush.add_(1.0)
-        torch.cuda.synchronize()
-        start.record()
-        fn()
-        end.record()
-        end.synchronize()
-        samples.append(start.elapsed_time(end) * 1000.0)
-    return samples
+    flush.add_(1.0)
+    torch.cuda.synchronize()
+    start.record()
+    fn()
+    end.record()
+    end.synchronize()
+    return start.elapsed_time(end) * 1000.0
 
 
 def main() -> None:
@@ -122,21 +115,27 @@ def main() -> None:
         round_medians: dict[str, list[float]] = {name: [] for name in variants}
 
         for round_idx in range(args.rounds):
-            order = list(variants)
-            if round_idx % 2 == 0:
-                rng.shuffle(order)
-            else:
-                order.reverse()
+            per_variant: dict[str, list[float]] = {name: [] for name in variants}
 
-            for name in order:
-                impl = variants[name]
-                out = outputs[name]
-                samples = timed_launch(
-                    lambda impl=impl, out=out: impl(x, w, out),
-                    flush,
-                    args.repeats,
-                )
-                round_medians[name].append(statistics.median(samples))
+            for sample_idx in range(args.repeats):
+                order = list(variants)
+                if (round_idx + sample_idx) % 2 == 0:
+                    rng.shuffle(order)
+                else:
+                    order.reverse()
+
+                for name in order:
+                    impl = variants[name]
+                    out = outputs[name]
+                    per_variant[name].append(
+                        timed_one(
+                            lambda impl=impl, out=out: impl(x, w, out),
+                            flush,
+                        )
+                    )
+
+            for name in variants:
+                round_medians[name].append(statistics.median(per_variant[name]))
 
         medians = {
             name: statistics.median(values)
