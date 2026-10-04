@@ -443,3 +443,45 @@ Selected V1 -> V2:
 - 128 x 512: 10.560 us -> 11.056 us (small regression).
 
 Conclusion: reduction coordination is reduced, but the result is already moving toward input/output-path limits. Next target is vectorized IO rather than deeper reduction-tree tuning.
+
+## RMSNorm V3 float4 IO
+
+V3 keeps the V2 warp-shuffle reduction but vectorizes aligned input, weight, and output traffic with `float4`. Non-multiple-of-four or unaligned inputs safely fall back to V2.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full repository suite after V3: **337 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 22 registers/thread, 32 B shared memory/block, 0 spills.
+
+Warm-cache benchmark showed large wins on several wide rows, e.g.:
+
+- 128 x 4096: 13.312 us -> 10.240 us (~1.30x);
+- 128 x 8192: 17.200 us -> 12.032 us (~1.43x);
+- 1024 x 4096: 26.512 us -> 21.472 us (~1.23x).
+
+However, repeated and L2-evicted measurements showed strong shape dependence and materially smaller gains. Some shapes regress. For example, under L2 eviction, 1024 x 512 measured about 13.35 us for V2 versus 16.38 us for V3, while 128 x 8192 still favored V3 strongly.
+
+Conclusion: vectorized IO is a valid optimization path but not a universal default. Warm-cache benchmark results alone are insufficient to choose a dispatcher.
+
+## RMSNorm V4 empirical dispatcher candidate
+
+V4 adds no new device kernel. It dispatches between V2 and V3 from an empirically measured profile table.
+
+The first warm-cache policy was rejected after L2-evicted measurements exposed unstable crossover points. A more conservative cold-cache profile was implemented and validated for correctness.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **355 passed**;
+- memcheck/racecheck/synccheck: clean on dispatcher boundaries;
+- non-profiled shapes fall back to V2.
+
+Decision: **do not merge V4 yet**.
+
+Reason: microsecond-level timing around several crossover shapes remains sensitive to cache state, execution order, and GPU operating state. In one final cold-cache run, identical underlying kernels reached noticeably different timings depending on whether they were invoked directly as V3 or indirectly through the V4 dispatch path, which is too large to attribute to host dispatch alone.
+
+Next profiling step should control GPU clocks/power state where possible, use alternating randomized variant order, L2 eviction, repeated independent rounds, and report confidence intervals before freezing the final dispatcher.
