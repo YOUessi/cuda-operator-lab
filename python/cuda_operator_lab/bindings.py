@@ -68,6 +68,8 @@ class _Library:
             "cuda_operator_rmsnorm_v0",
             "cuda_operator_rmsnorm_v1",
             "cuda_operator_rmsnorm_v2",
+            "cuda_operator_rmsnorm_v3",
+            "cuda_operator_rmsnorm_v4",
         ):
             function = getattr(self.handle, name)
             function.argtypes = [
@@ -462,3 +464,80 @@ def rmsnorm_v2(
     """Return row-wise RMSNorm V2 output."""
     out = torch.empty_like(x)
     return rmsnorm_v2_into(x, weight, out, eps)
+
+
+def rmsnorm_v3_into(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    out: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Launch V3: aligned float4 IO with V2 scalar fallback."""
+    _validate_rmsnorm_input(x, weight, eps)
+    _validate_rmsnorm_output(x, out)
+
+    rows, cols = x.shape
+    if rows == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_rmsnorm_v3(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(weight.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(rows),
+        ctypes.c_uint64(cols),
+        ctypes.c_float(eps),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def rmsnorm_v3(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Return row-wise RMSNorm V3 output."""
+    out = torch.empty_like(x)
+    return rmsnorm_v3_into(x, weight, out, eps)
+
+
+def rmsnorm_v4_into(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    out: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Launch V4: empirical dispatcher between V2 and V3."""
+    _validate_rmsnorm_input(x, weight, eps)
+    _validate_rmsnorm_output(x, out)
+
+    rows, cols = x.shape
+    if rows == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_rmsnorm_v4(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(weight.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(rows),
+        ctypes.c_uint64(cols),
+        ctypes.c_float(eps),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def rmsnorm_v4(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    out = torch.empty_like(x)
+    return rmsnorm_v4_into(x, weight, out, eps)
