@@ -1914,3 +1914,116 @@ Tang is currently online. V0 will not be merged until completing:
 - Compute Sanitizer memcheck / racecheck / synccheck;
 - ptxas resource capture;
 - raw artifacts and conclusions written back to this ledger.
+
+
+### Operation 2 — clean Tang build and full regression
+
+Tang fetched the GitHub branch and rebuilt from scratch.
+
+```text
+CUDA compiler: 12.8.93
+target: sm_89
+clean build: PASS
+full repository pytest: 268 passed
+```
+
+No source files were edited locally on Tang.
+
+### Operation 3 — RMSNorm V0 baseline benchmark
+
+Protocol:
+
+- CUDA events;
+- 10 warmups;
+- 50 timed repeats;
+- float32;
+- eps = 1e-5;
+- same input / weight used for V0 and PyTorch reference.
+
+Representative results:
+
+| Shape | V0 serial row | PyTorch reference | Slowdown |
+|---:|---:|---:|---:|
+| 1 x 128 | 15.680 us | 23.552 us | 0.67x |
+| 128 x 128 | 40.960 us | 24.576 us | 1.67x |
+| 128 x 512 | 145.104 us | 24.576 us | 5.90x |
+| 128 x 1024 | 270.336 us | 24.576 us | 11.00x |
+| 128 x 4096 | 1,035.216 us | 27.648 us | **37.44x** |
+| 1024 x 4096 | 1,046.528 us | 61.488 us | 17.02x |
+| 128 x 8192 | 1,691.936 us | 26.624 us | **63.55x** |
+
+Maximum recorded absolute error in the benchmark matrix was approximately `1.72e-5`.
+
+The width trend is clear: rows are already parallel, but the sum-of-squares and output passes inside each row are completely serial.
+
+Artifact:
+
+- `reports/data/rmsnorm_v0_rtx4090_laptop.csv`
+
+### Operation 4 — ptxas resource capture
+
+CUDA 12.8 / SM 8.9:
+
+```text
+registers/thread: 20
+shared memory/block: 0 B
+spills: 0
+barriers: 0
+stack frame: 0 B
+```
+
+Artifact:
+
+- `reports/data/rmsnorm_v0_ptxas_sm89.txt`
+
+### Operation 5 — Compute Sanitizer
+
+Representative non-power-of-two hidden size:
+
+```text
+shape: [17, 4097]
+dtype: float32
+eps: 1e-5
+```
+
+CUDA 12.8 Compute Sanitizer:
+
+```text
+memcheck:  0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+Representative max absolute error: `7.15e-6`.
+
+Artifact:
+
+- `reports/data/rmsnorm_v0_compute_sanitizer.txt`
+
+### V0 conclusion
+
+The baseline exposes the intended bottleneck:
+
+```text
+one thread per row
+  -> serial sum(x^2) over hidden width
+  -> serial normalize * weight over hidden width
+```
+
+The next isolated experiment should parallelize work **inside each row** without adding warp shuffle or vectorized loads yet.
+
+### Next action
+
+RMSNorm V1:
+
+```text
+one block per row
+  -> thread-local sum of squares over strided columns
+  -> shared-memory sum reduction
+  -> inverse RMS
+  -> parallel normalize * weight
+```
+
+This mirrors the project's profile-guided discipline: isolate intra-row parallelism first, then measure the remaining coordination cost.
+
+Status: **validated; ready to merge**.
