@@ -871,3 +871,261 @@ State what the data supports. Do not promote a shape-specific win into a univers
 ### Next action
 
 Derive the next change from the measured bottleneck, not from a predetermined optimization checklist.
+
+
+---
+
+## E09 — Softmax V2: warp-shuffle block reductions
+
+Status: **validated; ready to merge**
+
+### Hypothesis
+
+Softmax V1 removed the serial-width bottleneck, but every row still performs two complete 256-thread shared-memory trees:
+
+1. max reduction;
+2. denominator-sum reduction.
+
+Each tree uses repeated `__syncthreads()` stages and 1,024 B shared memory per block.
+
+If the row traversal and one-block-per-row launch policy are held constant, replacing only those two trees with two-level warp-shuffle reductions should isolate the cost of block-level reduction coordination.
+
+### Operation 1 — experiment branch and scope lock
+
+Created branch:
+
+```text
+feat/softmax-v2-warp-reduce
+```
+
+Scope is intentionally limited to:
+
+- keep 256 threads per row;
+- keep the same three Softmax passes;
+- keep block-stride column traversal;
+- replace max/sum reduction machinery only;
+- do not add float4, shape dispatch, or change block size in this experiment.
+
+Planned hardware validation:
+
+- clean CUDA 12.8 / SM 8.9 build;
+- full repository pytest;
+- Compute Sanitizer memcheck / racecheck / synccheck;
+- ptxas resource capture;
+- V1 vs V2 benchmark on the same Softmax shape matrix.
+
+
+### Operation 2 — GitHub implementation completed
+
+Implemented Softmax V2 directly on the GitHub feature branch without editing Tang locally.
+
+Changed:
+
+- `csrc/softmax/softmax.cu`: add two-level warp-shuffle max/sum reductions;
+- `csrc/softmax/softmax.cuh`: expose `cuda_operator_softmax_v2`;
+- `python/cuda_operator_lab/bindings.py`: add V2 ctypes binding;
+- `benchmarks/softmax_benchmark.py`: add `v2_warp_shuffle`;
+- `tests/test_softmax_v2.py`: add warp/block boundary, wide-row, stability, stream, output-reuse, and row-normalization coverage.
+
+The V2 reduction structure is:
+
+```text
+thread-local max
+  -> warp max via __shfl_down_sync
+  -> 8 warp maxima in shared memory
+  -> first warp final max
+  -> row_max
+
+thread-local exp sum
+  -> warp sum via __shfl_down_sync
+  -> 8 warp sums in shared memory
+  -> first warp final sum
+  -> denominator
+```
+
+Only 8 float partials are stored in shared memory. The one-block-per-row launch, 256 threads/block, column traversal, exponentiation pass, and normalization pass are intentionally unchanged from V1.
+
+A safety barrier is kept after all threads load the final row maximum before the shared partial buffer is reused for the denominator reduction. This directly preserves the Racecheck lesson from V1.
+
+GitHub commits in this operation:
+
+- `9667d1f`: expose V2 C ABI;
+- `4b3b919`: add warp-shuffle Softmax kernel;
+- `1fe3cc8`: bind V2 in Python;
+- `a1304c5`: add V2 benchmark variant;
+- `a8167d1`: add V2 correctness tests.
+
+### Operation 3 — real-GPU validation gate attempted
+
+A Tang hardware-validation run was requested after the GitHub implementation.
+
+Result:
+
+```text
+Tang device status: OFFLINE
+last seen: approximately 3 hours before validation attempt
+```
+
+Therefore no CUDA build, pytest, benchmark, sanitizer, or ptxas result is claimed yet for V2.
+
+Decision:
+
+- keep the branch unmerged;
+- do not invent performance numbers;
+- do not start Softmax V3 before V2 receives real RTX 4090 validation;
+- resume at the clean-build step when Tang is online.
+
+
+### Operation 4 — Tang returned online; clean hardware regression
+
+Tang fetched the GitHub branch and rebuilt from scratch.
+
+```text
+CUDA compiler: 12.8.93
+target: sm_89
+build: PASS
+full repository pytest: 180 passed
+```
+
+No local source edits were used.
+
+### Operation 5 — Compute Sanitizer
+
+Representative shape: `[17, 513]`.
+
+CUDA 12.8 Compute Sanitizer:
+
+```text
+memcheck:
+  0 errors
+
+racecheck:
+  0 hazards / 0 errors
+
+synccheck:
+  0 errors
+```
+
+Observed numerical values in all three runs:
+
+```text
+max_abs_error      = 3.725290298461914e-09
+max_row_sum_error  = 1.1920928955078125e-07
+```
+
+Artifact:
+
+- `reports/data/softmax_v2_compute_sanitizer.txt`
+
+### Operation 6 — ptxas resource capture
+
+CUDA 12.8 / `sm_89`:
+
+```text
+V1 shared-tree:
+  registers/thread: 21
+  shared memory/block: 1024 B
+  spills: 0
+
+V2 warp-shuffle:
+  registers/thread: 23
+  shared memory/block: 32 B
+  spills: 0
+```
+
+V2 trades two additional registers per thread for a **32x reduction in reduction scratch shared memory**.
+
+Artifact:
+
+- `reports/data/softmax_v2_ptxas_sm89.txt`
+
+### Operation 7 — V1 vs V2 benchmark
+
+First matrix:
+
+- 10 warmups;
+- 50 timed repeats;
+- CUDA events;
+- float32;
+- same input per shape.
+
+Representative results:
+
+```text
+128 x 128:
+  V1 11.264 us
+  V2 10.992 us
+
+128 x 4096:
+  V1 13.616 us
+  V2 13.248 us
+
+1024 x 128:
+  V1 14.336 us
+  V2 10.256 us
+
+1024 x 512:
+  V1 16.352 us
+  V2 12.288 us
+
+1024 x 4096:
+  V1 41.984 us
+  V2 39.744 us
+```
+
+Artifact:
+
+- `reports/data/softmax_v1_v2_50_rtx4090_laptop.csv`
+
+### Operation 8 — stable focused benchmark
+
+A second comparison used 20 warmups + 100 timed repeats on the main shape set.
+
+| Shape | V1 shared tree | V2 warp shuffle | V1 -> V2 | torch.softmax | V2 / torch |
+|---:|---:|---:|---:|---:|---:|
+| 128 x 128 | 10.368 us | 10.336 us | ~1.00x | 8.192 us | 1.26x |
+| 128 x 512 | **10.240 us** | 10.592 us | 0.97x | 8.176 us | 1.30x |
+| 128 x 1024 | 10.512 us | 10.400 us | 1.01x | 8.256 us | 1.26x |
+| 128 x 4096 | 13.664 us | **13.216 us** | 1.03x | 9.216 us | 1.43x |
+| 1024 x 128 | 14.336 us | **10.240 us** | **1.40x** | 8.096 us | 1.26x |
+| 1024 x 512 | 16.192 us | **12.256 us** | **1.32x** | 8.192 us | 1.50x |
+| 1024 x 4096 | 41.792 us | **39.600 us** | 1.06x | 36.608 us | 1.08x |
+
+Artifact:
+
+- `reports/data/softmax_v1_v2_100_rtx4090_laptop.csv`
+
+### Interpretation
+
+The hypothesis is partly validated and, importantly, the benefit is shape-dependent.
+
+V2 removes almost all reduction scratch storage:
+
+```text
+1024 B -> 32 B shared memory/block
+```
+
+and materially helps high-row-count cases. The largest observed V1 -> V2 gains in the stable run are:
+
+```text
+1024 x 128:  ~1.40x
+1024 x 512:  ~1.32x
+1024 x 4096: ~1.06x
+```
+
+For 128-row shapes the benefit is small, neutral, or slightly negative. The 128 x 512 case regresses by about 3.4%, so V2 is not promoted as a universal "warp shuffle is always faster" result.
+
+The new shape clue is the **row width versus fixed 256-thread block**. At cols=128, half of a 256-thread block has no column work but still participates in the block-level control flow. V2 made this waste easier to see because the reduction tree is no longer the dominant cost.
+
+### Next action
+
+Softmax V3 should keep the V2 warp-shuffle algorithm but make the block width depend on row width:
+
+```text
+cols <= 32   -> 32 threads
+cols <= 64   -> 64 threads
+cols <= 128  -> 128 threads
+otherwise    -> 256 threads
+```
+
+This isolates launch/work efficiency before adding vectorized loads or changing the three-pass Softmax algorithm.

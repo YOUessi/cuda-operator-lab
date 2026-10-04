@@ -265,3 +265,32 @@ Representative speedups:
 - 1024 x 4096: 1,353.728 us -> 37.888 us, versus PyTorch 36.960 us.
 
 Next: replace the two full shared-memory trees with warp-shuffle reductions while holding the rest of Softmax constant.
+
+
+## Softmax V2 warp-shuffle reductions
+
+### Design
+
+V2 keeps one 256-thread block per row and replaces V1's two 256-entry shared-memory trees with two-level warp-shuffle reductions. Eight warp partials are stored in shared memory for both max and denominator sum reductions.
+
+The shared partial buffer is not reused until all threads have consumed the final row maximum, preserving the synchronization fix learned from V1 Racecheck.
+
+### Validation
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full repository suite: **180 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors;
+- ptxas: 23 registers/thread, 32 B shared/block, 0 spills.
+
+### Performance finding
+
+Stable 100-repeat benchmark:
+
+- 1024 x 128: 14.336 us -> 10.240 us (~1.40x);
+- 1024 x 512: 16.192 us -> 12.256 us (~1.32x);
+- 1024 x 4096: 41.792 us -> 39.600 us (~1.06x);
+- 128 x 512: 10.240 us -> 10.592 us (small regression).
+
+Conclusion: warp-level reduction meaningfully reduces coordination cost for high-row-count workloads, but fixed 256-thread blocks are not efficient for all widths. Next isolate width-aware block sizing.

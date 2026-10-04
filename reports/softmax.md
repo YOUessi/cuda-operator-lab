@@ -186,3 +186,76 @@ Raw artifacts:
 - `reports/data/softmax_v0_v1_rtx4090_laptop.csv`
 - `reports/data/softmax_v1_ptxas_sm89.txt`
 - `reports/data/softmax_v1_compute_sanitizer.txt`
+
+
+---
+
+## V2 — warp-shuffle max and sum reductions
+
+### Algorithm
+
+V2 preserves V1's one-block-per-row policy, 256-thread block size, block-stride column traversal, and three Softmax passes. Only the two block reductions change.
+
+```text
+thread-local value
+  -> warp __shfl_down_sync
+  -> one partial per warp
+  -> shared[8]
+  -> first warp final reduction
+```
+
+The pattern is used once for row max and once for denominator sum.
+
+The V1 Racecheck lesson is preserved: all threads consume the final row maximum before the shared warp-partial buffer is reused.
+
+### Correctness and safety
+
+RTX 4090 Laptop / CUDA 12.8 / SM 8.9:
+
+- clean build: PASS;
+- full repository suite: **180 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors;
+- representative max absolute error: `3.73e-9`;
+- representative max row-sum error: `1.19e-7`.
+
+### Resource usage
+
+| Variant | Registers/thread | Shared memory/block | Spills |
+|---|---:|---:|---:|
+| V1 | 21 | 1,024 B | 0 |
+| V2 | 23 | **32 B** | 0 |
+
+### Stable performance
+
+20 warmups + 100 timed repeats:
+
+| Shape | V1 (us) | V2 (us) | V1 -> V2 | PyTorch (us) |
+|---:|---:|---:|---:|---:|
+| 128 x 128 | 10.368 | 10.336 | ~1.00x | 8.192 |
+| 128 x 512 | **10.240** | 10.592 | 0.97x | 8.176 |
+| 128 x 1024 | 10.512 | **10.400** | 1.01x | 8.256 |
+| 128 x 4096 | 13.664 | **13.216** | 1.03x | 9.216 |
+| 1024 x 128 | 14.336 | **10.240** | **1.40x** | 8.096 |
+| 1024 x 512 | 16.192 | **12.256** | **1.32x** | 8.192 |
+| 1024 x 4096 | 41.792 | **39.600** | 1.06x | 36.608 |
+
+### Interpretation
+
+Warp shuffle is most valuable when many row blocks are active and the cost of repeated shared-memory reduction stages is visible. For the 1024-row shapes V2 is consistently better, with up to ~1.40x V1 -> V2 improvement.
+
+For 128 rows the result is near-neutral, and 128 x 512 is slightly slower. V2 therefore remains an explicit optimization stage rather than a claim of universal superiority.
+
+The next isolated issue is fixed block width. A 128-column row launches 256 threads, leaving half the threads without column work.
+
+### V3 hypothesis
+
+Keep the V2 kernel mathematics and warp-shuffle reductions, but dispatch the thread count by row width before attempting float4/vectorized Softmax.
+
+Raw artifacts:
+
+- `reports/data/softmax_v1_v2_50_rtx4090_laptop.csv`
+- `reports/data/softmax_v1_v2_100_rtx4090_laptop.csv`
+- `reports/data/softmax_v2_ptxas_sm89.txt`
+- `reports/data/softmax_v2_compute_sanitizer.txt`

@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Softmax V1
+## Current milestone: Softmax V2
 
 Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
 
@@ -154,6 +154,29 @@ V1 hardware validation also found and fixed a shared-memory reuse race through C
 
 Detailed operation history and raw artifacts are in `docs/experiment-log.md` and `reports/data/softmax_v0_*`.
 
+### Softmax V2 warp-shuffle reduction
+
+V2 keeps one 256-thread block per row but replaces the two full shared-memory trees with warp-shuffle reductions.
+
+Validation on the RTX 4090 Laptop:
+
+- full repository suite: **180 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors;
+- shared memory: **1,024 B -> 32 B** per block;
+- ptxas: 23 registers/thread, 0 spills.
+
+Stable 100-repeat results:
+
+| Shape | V1 | V2 | PyTorch |
+|---:|---:|---:|---:|
+| 1024 x 128 | 14.336 us | **10.240 us** | 8.096 us |
+| 1024 x 512 | 16.192 us | **12.256 us** | 8.192 us |
+| 1024 x 4096 | 41.792 us | **39.600 us** | 36.608 us |
+
+The win is shape-dependent; 128 x 512 slightly regresses. That points to the next experiment: width-aware thread-count dispatch rather than assuming 256 threads per row is optimal.
+
 ## Quick start
 
 ```bash
@@ -161,9 +184,8 @@ Detailed operation history and raw artifacts are in `docs/experiment-log.md` and
 ./scripts/test.sh
 
 PYTHONPATH=$PWD/python \
-python3 benchmarks/reduction_benchmark.py \
-  --variants v3_warp_shuffle v5_shape_aware_float4 \
-  --cache-mode cold
+python3 benchmarks/softmax_benchmark.py \
+  --variants v1_block_shared v2_warp_shuffle
 ```
 
 ## Local target
