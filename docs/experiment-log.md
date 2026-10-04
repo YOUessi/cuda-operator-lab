@@ -1853,3 +1853,64 @@ Status: **validated; ready to merge**.
 Softmax now has a complete optimization story from serial row work to block parallelism, warp reduction, negative thread-count tuning, row packing, and empirical shape dispatch.
 
 The next operator should be **RMSNorm**, starting from a simple correct baseline and reusing the same operation ledger / sanitizer / benchmark discipline.
+
+
+---
+
+## E13 — RMSNorm V0: serial row baseline
+
+Status: **in progress**
+
+### Hypothesis
+
+RMSNorm introduces a different normalization pattern from Softmax:
+
+```text
+mean_square = mean(x_i^2)
+inverse_rms = rsqrt(mean_square + eps)
+y_i = x_i * inverse_rms * weight_i
+```
+
+A deliberately simple one-thread-per-row implementation should provide a clean correctness and performance baseline before adding cooperative row reductions.
+
+### Operation 1 — GitHub implementation
+
+Created branch:
+
+```text
+feat/rmsnorm-v0-baseline
+```
+
+Implemented V0 entirely on GitHub:
+
+- `csrc/rmsnorm/rmsnorm.cu` / `.cuh`;
+- CMake integration;
+- PyTorch reference implementation;
+- ctypes binding on the active PyTorch CUDA stream;
+- correctness tests;
+- CUDA-event benchmark harness.
+
+V0 execution:
+
+```text
+one CUDA thread owns one row
+  -> serial sum of squares
+  -> mean square
+  -> rsqrt(mean_square + eps)
+  -> serial x * inverse_rms * weight
+```
+
+The initial scope is float32, 2-D contiguous input `[rows, cols]`, 1-D contiguous weight `[cols]`, and positive epsilon.
+
+No shared-memory reduction, warp shuffle, vectorized load, or shape dispatch is included in V0.
+
+### Planned hardware validation
+
+Tang is currently online. V0 will not be merged until completing:
+
+- clean CUDA 12.8 / SM 8.9 build;
+- full repository pytest;
+- RMSNorm benchmark across narrow and LLM-style hidden sizes;
+- Compute Sanitizer memcheck / racecheck / synccheck;
+- ptxas resource capture;
+- raw artifacts and conclusions written back to this ledger.
