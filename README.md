@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Softmax V3
+## Current milestone: Softmax V4
 
 Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
 
@@ -190,6 +190,23 @@ Hardware validation:
 The result is intentionally retained as a negative/shape-sensitive experiment. Stable measurements showed no universal gain and regressions at some narrow shapes (for example 1024 x 64).
 
 This redirects the small-row design toward **one warp per row, multiple rows per 256-thread block**, rather than shrinking one row's block.
+
+### Softmax V4 warp-per-row packing
+
+For rows with at most 128 columns, V4 keeps a 256-thread block but assigns each of its eight warps to a different row. The packed path uses only warp shuffles: **0 B shared memory and no block-wide barriers**.
+
+Clean RTX 4090 validation: **229 tests passed**; memcheck / racecheck / synccheck are clean.
+
+20-warmup / 100-repeat results:
+
+| Shape | V3 width-aware | V4 packed | Speedup |
+|---:|---:|---:|---:|
+| 4096 x 32 | 11.024 us | **10.240 us** | 1.08x |
+| 4096 x 128 | 14.336 us | **11.136 us** | 1.29x |
+| 16384 x 32 | 19.392 us | **13.952 us** | 1.39x |
+| 16384 x 128 | 32.752 us | **19.136 us** | **1.71x** |
+
+The packed layout is not universal: `128 x 128` regresses from 10.480 us to 11.152 us. The next step is an empirical V3/V4 dispatcher based on row-count/width crossover data, not a guessed threshold.
 
 ## Quick start
 

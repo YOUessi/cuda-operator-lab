@@ -313,3 +313,73 @@ Raw artifacts:
 - `reports/data/softmax_v2_v3_100_rtx4090_laptop.csv`
 - `reports/data/softmax_v3_ptxas_sm89.txt`
 - `reports/data/softmax_v3_compute_sanitizer.txt`
+
+
+---
+
+## V4 — one warp per row, eight rows per block
+
+### Design
+
+For `cols <= 128`, V4 changes the execution layout rather than the Softmax math.
+
+A 256-thread block is divided into eight independent warps:
+
+```text
+warp 0 -> row r+0
+warp 1 -> row r+1
+...
+warp 7 -> row r+7
+```
+
+Each warp performs row max, exp-sum, and normalization with lane-stride access and warp shuffle only. No shared memory and no block-wide barrier are needed.
+
+For wider rows, V4 falls back to V3.
+
+### Validation
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full repository suite: **229 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 warnings;
+- synccheck: 0 errors.
+
+### Resources
+
+| Variant | Registers/thread | Shared memory/block | Barriers | Spills |
+|---|---:|---:|---:|---:|
+| V3 | 23 | 32 B | yes | 0 |
+| V4 packed | 30 | **0 B** | **0** | 0 |
+
+### Performance
+
+20 warmups + 100 timed repeats:
+
+| Shape | V3 | V4 | Speedup | PyTorch |
+|---:|---:|---:|---:|---:|
+| 4096 x 32 | 11.024 us | **10.240 us** | 1.08x | 8.016 us |
+| 4096 x 64 | 11.264 us | **10.576 us** | 1.07x | 8.160 us |
+| 4096 x 128 | 14.336 us | **11.136 us** | 1.29x | 8.688 us |
+| 16384 x 32 | 19.392 us | **13.952 us** | 1.39x | 8.192 us |
+| 16384 x 64 | 21.776 us | **15.104 us** | 1.44x | 9.216 us |
+| 16384 x 128 | 32.752 us | **19.136 us** | **1.71x** | 11.424 us |
+
+Small-row-count behavior is shape-sensitive:
+
+```text
+128 x 128:
+V3 10.480 us
+V4 11.152 us
+```
+
+so V4 is not yet the default path for every narrow matrix.
+
+### Next hypothesis
+
+Use an empirical dispatcher that selects V4 only above row-count thresholds measured independently for 32-, 64-, and 128-column regions.
+
+Raw artifacts:
+
+- `reports/data/softmax_v3_v4_warp_rows100_rtx4090.csv`
+- `reports/data/softmax_v4_ptxas_sm89.txt`
+- `reports/data/softmax_v4_compute_sanitizer.txt`

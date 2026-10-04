@@ -1,0 +1,19 @@
+Softmax V4 Compute Sanitizer validation
+CUDA 12.8 / SM 8.9
+Shapes exercised:
+  [17,31], [17,65], [17,127], [17,129], [9,32]
+
+memcheck:
+  ERROR SUMMARY: 0 errors
+
+racecheck:
+  RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+synccheck:
+  ERROR SUMMARY: 0 errors
+
+Observed max_abs_error:
+  <= 1.4901161193847656e-08 on packed-path shapes
+
+Observed max_row_sum_error:
+  <= 1.7881393432617188e-07

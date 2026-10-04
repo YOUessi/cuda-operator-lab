@@ -1334,3 +1334,262 @@ Softmax V4 should keep a full 256-thread block but assign **one warp per small r
 ```
 
 For small widths this preserves 8 useful warps per block instead of shrinking the block to 1–4 warps. Wider rows will fall back to the validated V2 one-block-per-row path.
+
+
+### E10 addendum — high-row-count revalidation changes the V3 conclusion
+
+The original V3 sweep covered 128-row and 1024-row shapes and concluded that width-aware block shrinkage was too shape-sensitive to use as a default policy.
+
+After Tang reconnected, the same already-merged V3 implementation was revalidated on larger row counts before moving on.
+
+Protocol:
+
+- current `main` Softmax V3 implementation;
+- 20 warmups;
+- 100 timed repeats;
+- V2 fixed-256 versus V3 width-aware;
+- no code changes between the two variants other than the existing V3 launch policy.
+
+Results:
+
+| Shape | V2 fixed 256 | V3 width-aware | V2 -> V3 | PyTorch |
+|---:|---:|---:|---:|---:|
+| 4096 x 32 | 17.408 us | **10.256 us** | **1.70x** | 8.160 us |
+| 4096 x 64 | 17.408 us | **11.264 us** | **1.55x** | 7.456 us |
+| 4096 x 128 | 18.080 us | **13.968 us** | **1.29x** | 8.000 us |
+| 16384 x 32 | 46.128 us | **18.432 us** | **2.50x** | 7.168 us |
+| 16384 x 64 | 47.104 us | **21.520 us** | **2.19x** | 8.864 us |
+| 16384 x 128 | 49.152 us | **32.448 us** | **1.51x** | 11.136 us |
+
+Artifact:
+
+- `reports/data/softmax_v2_v3_highrows_revalidation100_rtx4090.csv`
+
+Revised interpretation:
+
+- V3 is near-neutral or shape-sensitive at low/moderate row counts;
+- V3 is clearly beneficial for high-row-count narrow matrices;
+- the previous “negative experiment” label was therefore incomplete rather than wrong;
+- the useful condition is **narrow width + enough rows for oversized 256-thread blocks to become a scheduling cost**.
+
+This addendum is kept instead of rewriting the earlier E10 section so the project preserves how the conclusion evolved when a missing workload regime was added.
+
+---
+
+## E11 — Softmax V4: one warp per row, multiple rows per block
+
+Status: **in progress**
+
+### Hypothesis
+
+V3 proves that 256 threads per narrow row wastes scheduling capacity when row count is high. However, simply shrinking each block to one or two warps can reduce the number of useful warps resident in a block and gives limited benefit at lower row counts.
+
+V4 will test a different layout for narrow rows:
+
+```text
+one 256-thread block
+  -> 8 warps
+  -> each warp owns one row
+  -> up to 8 rows processed per block
+```
+
+This keeps a full 8-warps-per-block launch while eliminating cross-warp reduction for each row.
+
+### Operation 1 — scope lock
+
+V4 will be isolated to `cols <= 128`.
+
+For each warp-owned row:
+
+- lane-stride max over the row;
+- warp-only `__shfl_down_sync` max;
+- warp-only exp + denominator sum;
+- warp-only `__shfl_down_sync` sum;
+- warp-only normalize.
+
+No shared memory and no block-wide synchronization should be required for the packed path.
+
+For `cols > 128`, V4 will fall back to the already validated V2/V3 path instead of changing wide-row behavior.
+
+The first implementation will use 8 rows per 256-thread block for all `cols <= 128`; if this regresses 128-column rows, a later dispatch threshold can be derived from measured data rather than guessed.
+
+Planned evidence:
+
+- clean CUDA build and full pytest;
+- boundary correctness at 31/32/33, 63/64/65, 127/128/129;
+- Compute Sanitizer memcheck / racecheck / synccheck;
+- ptxas resources;
+- V3 versus V4 benchmark at 128 / 1024 / 4096 / 16384 rows.
+
+
+### Operation 2 — GitHub implementation
+
+Implemented V4 directly on GitHub.
+
+Packed path for `cols <= 128`:
+
+```text
+256-thread block
+  -> 8 warps
+  -> warp 0 handles row 0
+  -> warp 1 handles row 1
+  -> ...
+  -> warp 7 handles row 7
+```
+
+Each warp performs the entire row Softmax independently:
+
+```text
+lane-stride row max
+  -> warp_reduce_max
+  -> lane-0 broadcast
+  -> lane-stride exp + local sum
+  -> warp_reduce_sum
+  -> lane-0 denominator broadcast
+  -> lane-stride normalize
+```
+
+No shared memory or block-wide synchronization is used by the packed kernel.
+
+Rows are mapped as:
+
+```text
+row = blockIdx.x * 8 + warp_id
+blocks = ceil(rows / 8)
+```
+
+For `cols > 128`, V4 falls back to V3 so wide-row behavior is held constant.
+
+Added:
+
+- `cuda_operator_softmax_v4`;
+- Python V4 binding;
+- benchmark variant with `rows_per_block`;
+- correctness coverage for row-count boundaries 7 / 8 / 9 and width boundaries 31 / 32 / 33, 63 / 64 / 65, 127 / 128 / 129.
+
+### Operation 3 — clean hardware regression
+
+Tang fetched the GitHub branch and rebuilt from scratch.
+
+```text
+CUDA 12.8 / sm_89 build: PASS
+full repository pytest: 229 passed
+```
+
+No local source edits were used.
+
+### Operation 4 — Compute Sanitizer
+
+Representative shapes exercise packed and fallback paths:
+
+```text
+[17,31]
+[17,65]
+[17,127]
+[17,129]
+[9,32]
+```
+
+Final CUDA 12.8 Compute Sanitizer:
+
+```text
+memcheck:  0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+Observed packed-path max absolute error stayed at or below approximately `1.49e-8`; row-sum error stayed below approximately `1.79e-7`.
+
+Artifact:
+
+- `reports/data/softmax_v4_compute_sanitizer.txt`
+
+### Operation 5 — ptxas resource capture
+
+CUDA 12.8 / SM 8.9:
+
+```text
+V4 warp-per-row:
+  registers/thread: 30
+  shared memory/block: 0 B
+  barriers: 0
+  spills: 0
+
+V3 width-aware:
+  registers/thread: 23
+  shared memory/block: 32 B
+  barriers: used
+  spills: 0
+```
+
+The packed path removes all block-level scratch and barriers, at the cost of seven additional registers per thread.
+
+Artifact:
+
+- `reports/data/softmax_v4_ptxas_sm89.txt`
+
+### Operation 6 — stable V3 vs V4 benchmark
+
+Protocol:
+
+- CUDA events;
+- 20 warmups;
+- 100 timed repeats;
+- identical input per shape.
+
+Results:
+
+| Shape | V3 width-aware | V4 warp rows | V3 -> V4 | PyTorch |
+|---:|---:|---:|---:|---:|
+| 128 x 32 | 10.416 us | 10.368 us | ~1.00x | 8.576 us |
+| 128 x 64 | 11.056 us | **10.624 us** | 1.04x | 8.192 us |
+| 128 x 128 | **10.480 us** | 11.152 us | **0.94x** | 8.304 us |
+| 1024 x 32 | 10.560 us | **10.240 us** | 1.03x | 8.192 us |
+| 1024 x 64 | 10.496 us | **10.368 us** | 1.01x | 8.192 us |
+| 1024 x 128 | 10.288 us | **10.240 us** | ~1.00x | 8.192 us |
+| 4096 x 32 | 11.024 us | **10.240 us** | 1.08x | 8.016 us |
+| 4096 x 64 | 11.264 us | **10.576 us** | 1.07x | 8.160 us |
+| 4096 x 128 | 14.336 us | **11.136 us** | **1.29x** | 8.688 us |
+| 16384 x 32 | 19.392 us | **13.952 us** | **1.39x** | 8.192 us |
+| 16384 x 64 | 21.776 us | **15.104 us** | **1.44x** | 9.216 us |
+| 16384 x 128 | 32.752 us | **19.136 us** | **1.71x** | 11.424 us |
+| 1024 x 512 | 12.288 us | 12.288 us | 1.00x | 8.192 us |
+| 1024 x 4096 | 38.912 us | 38.912 us | 1.00x | 37.328 us |
+
+Artifact:
+
+- `reports/data/softmax_v3_v4_warp_rows100_rtx4090.csv`
+
+### Interpretation
+
+The packing hypothesis is validated for high-row-count narrow Softmax.
+
+The gain grows with row count because the packed kernel converts eight separate small row blocks into one 8-warp block while keeping all warps useful.
+
+At `16384 x 128`, V4 improves V3 by about **1.71x**.
+
+However, V4 is not universal:
+
+```text
+128 x 128:
+V3 10.480 us
+V4 11.152 us
+```
+
+That regression is important. Packing eight rows reduces the number of blocks and changes scheduling granularity; when row count is small, the saved block overhead does not always compensate.
+
+### V4 conclusion
+
+Warp-per-row packing is a strong execution layout for sufficiently many narrow rows, but needs a row-count/width-aware dispatcher.
+
+### Next action
+
+Softmax V5 should not invent a threshold.
+
+Before coding the final dispatcher:
+
+1. sweep row count around the crossover separately for widths 32 / 64 / 128;
+2. compare V3 and V4 under the same timing protocol;
+3. choose conservative row thresholds from stable data;
+4. dispatch to V4 only above measured crossover;
+5. keep V3 below threshold and keep the wide-row path unchanged.
