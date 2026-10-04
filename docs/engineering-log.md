@@ -672,3 +672,56 @@ Numerical stability experiment on inputs near `1000 + N(0, 0.1)`, using float64 
 The double-Welford experiment was not retained: it used 48 registers/thread, 160 B shared memory, and caused roughly 5–12x performance regressions on representative shapes.
 
 Conclusion: Welford is useful as a numerical-method study, but on this GPU the float32 version does not provide a robust speedup and the double version is too expensive. The next performance target is vectorized IO while retaining the faster V2 two-pass statistics.
+
+## LayerNorm V4 aligned float4 IO
+
+V4 returns to the faster V2 two-pass statistics path and changes only memory access.
+
+Aligned fast path:
+
+- `float4` input loads for mean;
+- `float4` input loads for variance;
+- `float4` weight and bias loads;
+- `float4` output stores;
+- unchanged V2 warp-shuffle reductions.
+
+Unaligned pointers or `cols % 4 != 0` fall back to V2.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **467 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 26 registers/thread, 32 B shared memory/block, 0 spills.
+
+Warm-cache representative V2 -> V4:
+
+- 128 x 4096: 14.304 us -> 11.264 us (~1.27x);
+- 1024 x 4096: 31.840 us -> 25.456 us (~1.25x);
+- 128 x 8192: 19.456 us -> 13.312 us (~1.46x);
+- 1024 x 512: 12.512 us -> 11.888 us (~1.05x).
+
+Stable L2-evicted interleaved profiling showed that the benefit is strongly shape-dependent.
+
+Robust gains across two independent seeds:
+
+- 128 x 4096: ~1.41x / ~1.38x;
+- 256 x 4096: ~1.25x / ~1.26x;
+- 512 x 4096: ~1.18x / ~1.18x;
+- 128 x 8192: ~1.42x / ~1.42x;
+- 256 x 8192: ~1.18x / ~1.18x;
+- 512 x 8192: ~1.16x / ~1.16x;
+- 1024 x 512: ~1.12x / ~1.11x;
+- 1536 x 512: ~1.06x / ~1.07x;
+- 1536 x 1024: ~1.07x / ~1.05x.
+
+Neutral or negative examples:
+
+- 2048 x 4096: ~1.00x;
+- 1024 x 4096: ~1.02x;
+- 2048 x 512: ~1.01–1.04x;
+- 2048 x 1024: V4 regresses to ~0.93x V2.
+
+Conclusion: float4 is a strong memory-path optimization for selected shapes, but should not be enabled universally. Next: V5 profile-guided dispatcher between V2 and V4.
