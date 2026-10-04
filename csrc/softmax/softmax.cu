@@ -75,6 +75,10 @@ __global__ void softmax_v1_block_row_kernel(
 
   const float row_max = shared[0];
 
+  // shared[] is reused for the denominator reduction below. Every warp must
+  // finish reading shared[0] before thread 0 is allowed to overwrite it.
+  __syncthreads();
+
   float local_sum = 0.0F;
   for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
     const float value = expf(row_input[col] - row_max);
