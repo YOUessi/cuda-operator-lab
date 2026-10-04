@@ -777,3 +777,14 @@ Fallback validation:
 - 2048 x 512: V2 24.576 us, V5 24.592 us.
 
 Conclusion: LayerNorm now has a complete optimization path from serial baseline through block parallelism, warp reductions, Welford study, vectorized IO, and evidence-driven dispatch.
+
+## Fused Residual + LayerNorm V0 baseline
+
+The fifth operator case study fuses residual addition directly into LayerNorm:
+
+```text
+z = x + residual
+y = LayerNorm(z)
+```
+
+V0 intentionally keeps one CUDA thread per row and serial mean/variance/affine passes. The only architectural change versus an unfused graph is eliminating the materialized intermediate residual-add tensor.
