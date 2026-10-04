@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Softmax V3
+## Current milestone: Softmax V4
 
 Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
 
@@ -191,6 +191,27 @@ The result is intentionally retained as a negative/shape-sensitive experiment. S
 
 This redirects the small-row design toward **one warp per row, multiple rows per 256-thread block**, rather than shrinking one row's block.
 
+### Softmax V4 packed warp-per-row scheduling
+
+For row widths <=128, V4 packs eight rows into one 256-thread block, one row per warp. The packed kernel uses no shared memory and no block-wide barrier.
+
+Validation:
+
+- **234 tests passed**;
+- memcheck / racecheck / synccheck clean;
+- ptxas: 30 registers/thread, 0 B shared memory, 0 spills, 0 barriers.
+
+The benefit appears once row count is large:
+
+| Shape | V2 | V4 |
+|---:|---:|---:|
+| 4096 x 32 | 17.408 us | **10.272 us** |
+| 4096 x 64 | 17.408 us | **10.368 us** |
+| 4096 x 128 | 18.432 us | **10.928 us** |
+| 8192 x 32 | 27.136 us | **10.304 us** |
+
+For <=1024 rows the packed path is mostly neutral, so the next step is an empirical dispatcher rather than using V4 universally.
+
 ## Quick start
 
 ```bash
@@ -199,7 +220,7 @@ This redirects the small-row design toward **one warp per row, multiple rows per
 
 PYTHONPATH=$PWD/python \
 python3 benchmarks/softmax_benchmark.py \
-  --variants v2_warp_shuffle v3_width_aware
+  --variants v2_warp_shuffle v4_packed_warps
 ```
 
 ## Local target
