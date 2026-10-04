@@ -17,6 +17,7 @@ from cuda_operator_lab.bindings import (
     softmax_v2_into,
     softmax_v3_into,
     softmax_v4_into,
+    softmax_v5_into,
 )
 from cuda_operator_lab.references import row_softmax
 
@@ -41,6 +42,7 @@ VARIANTS: dict[str, SoftmaxFn] = {
     "v2_warp_shuffle": softmax_v2_into,
     "v3_width_aware": softmax_v3_into,
     "v4_warp_rows": softmax_v4_into,
+    "v5_shape_dispatch": softmax_v5_into,
 }
 
 
@@ -149,9 +151,19 @@ def main() -> None:
                     else 256
                 )
             )
+            v5_uses_packed = (
+                name == "v5_shape_dispatch"
+                and (
+                    (cols <= 64 and rows >= 4096)
+                    or (64 < cols <= 128 and rows >= 2048)
+                )
+            )
             rows_per_block = (
                 8
-                if name == "v4_warp_rows" and cols <= 128
+                if (
+                    (name == "v4_warp_rows" and cols <= 128)
+                    or v5_uses_packed
+                )
                 else 1
             )
 
