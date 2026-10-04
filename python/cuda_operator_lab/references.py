@@ -23,3 +23,25 @@ def row_softmax(x: torch.Tensor) -> torch.Tensor:
     if x.shape[1] == 0:
         raise ValueError("row_softmax requires cols > 0")
     return torch.softmax(x, dim=-1, dtype=torch.float32)
+
+
+def rmsnorm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Trusted row-wise float32 RMSNorm reference."""
+    if x.ndim != 2:
+        raise ValueError("rmsnorm expects a 2-D tensor")
+    if x.dtype != torch.float32:
+        raise TypeError("rmsnorm currently supports float32 only")
+    if weight.ndim != 1 or weight.shape[0] != x.shape[1]:
+        raise ValueError("weight must be 1-D with length equal to x.shape[1]")
+    if weight.dtype != torch.float32:
+        raise TypeError("rmsnorm weight must be float32")
+    if x.shape[1] == 0:
+        raise ValueError("rmsnorm requires cols > 0")
+    if eps <= 0:
+        raise ValueError("eps must be positive")
+    mean_square = x.square().mean(dim=-1, keepdim=True)
+    return x * torch.rsqrt(mean_square + eps) * weight
