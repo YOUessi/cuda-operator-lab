@@ -259,3 +259,72 @@ Raw artifacts:
 - `reports/data/softmax_v1_v2_100_rtx4090_laptop.csv`
 - `reports/data/softmax_v2_ptxas_sm89.txt`
 - `reports/data/softmax_v2_compute_sanitizer.txt`
+
+
+---
+
+## V3 — width-aware block dispatch
+
+### Goal
+
+V2 uses 256 threads per row regardless of width. V3 keeps the same warp-shuffle Softmax algorithm but changes block width for narrow rows:
+
+```text
+cols <= 32   ->  32 threads
+cols <= 64   ->  64 threads
+cols <= 128  -> 128 threads
+cols > 128   -> exact V2 256-thread kernel
+```
+
+The wide-row fallback is deliberately the exact V2 kernel so the benchmark isolates dispatch width rather than compiler specialization.
+
+### Racecheck-discovered one-warp bug
+
+The first 32-thread implementation reused shared memory even though the entire block was one warp. Numerical tests passed, but Racecheck reported two warnings with 68 hazards grouped in each.
+
+The fix removes shared-memory handoff for one-warp blocks and broadcasts the final register value with `__shfl_sync`.
+
+Final sanitizer result across 31 / 65 / 127 / 129 / 513-column shapes:
+
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 warnings;
+- synccheck: 0 errors.
+
+### Resources
+
+| Path | Registers/thread | Shared memory/block | Spills |
+|---|---:|---:|---:|
+| V3 32-thread | 28 | 0 B | 0 |
+| V3 64-thread | 32 | 8 B | 0 |
+| V3 128-thread | 32 | 16 B | 0 |
+| V2 256-thread | 23 | 32 B | 0 |
+
+### Performance
+
+20 warmups + 100 timed repeats:
+
+| Shape | V2 | V3 | Speedup | PyTorch |
+|---:|---:|---:|---:|---:|
+| 4096 x 32 | 17.408 us | **10.240 us** | **1.70x** | 7.872 us |
+| 4096 x 64 | 17.408 us | **12.064 us** | **1.44x** | 8.096 us |
+| 4096 x 128 | 18.432 us | **15.184 us** | **1.21x** | 8.208 us |
+| 16384 x 32 | 46.880 us | **17.408 us** | **2.69x** | 8.000 us |
+| 16384 x 64 | 47.328 us | **23.552 us** | **2.01x** | 9.056 us |
+| 16384 x 128 | 49.264 us | **36.448 us** | **1.35x** | 11.184 us |
+
+For `cols > 128`, V3 dispatches to V2 and therefore intentionally has no algorithmic difference.
+
+### Interpretation
+
+The fixed 256-thread block was indeed wasteful for narrow rows, but the cost only becomes substantial when enough row blocks are launched.
+
+At 16384 x 32, reducing block width from 256 to 32 cuts latency by about 2.69x.
+
+This optimization is therefore a workload-shape scheduling decision, not a universal kernel-body improvement.
+
+Raw artifacts:
+
+- `reports/data/softmax_v2_v3_width_dispatch100_rtx4090.csv`
+- `reports/data/softmax_v3_ptxas_sm89.txt`
+- `reports/data/softmax_v3_compute_sanitizer.txt`
+- `reports/data/softmax_v3_racecheck_failure.txt`
