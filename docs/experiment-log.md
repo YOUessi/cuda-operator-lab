@@ -2826,3 +2826,119 @@ Artifacts:
 Keep float32 Welford as a valid algorithmic/numerical experiment, but do not treat it as the default fastest LayerNorm implementation.
 
 Next performance experiment: preserve V2 two-pass warp-shuffle statistics and vectorize aligned input/weight/bias/output traffic with `float4`.
+
+## E22 — LayerNorm V4: aligned float4 IO
+
+Status: **validated experimental fast path; shape-dependent**
+
+### Hypothesis
+
+After V2, reduction coordination is small. Wide rows still require three large memory passes:
+
+```text
+input -> mean
+input -> variance
+input + weight + bias -> output
+```
+
+V4 keeps V2's math and reductions but vectorizes aligned IO with `float4`.
+
+### Implementation
+
+Fast path requires:
+
+```text
+cols % 4 == 0
+input / weight / bias / output 16-byte aligned
+```
+
+Otherwise V4 falls back to V2.
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 467 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+ptxas:
+
+```text
+V2:
+  23 registers/thread
+  32 B shared memory/block
+
+V4:
+  26 registers/thread
+  32 B shared memory/block
+  0 spills
+```
+
+### Warm benchmark
+
+Selected results:
+
+| Shape | V2 | V4 | V2 -> V4 |
+|---:|---:|---:|---:|
+| 128 x 4096 | 14.304 us | 11.264 us | 1.27x |
+| 1024 x 4096 | 31.840 us | 25.456 us | 1.25x |
+| 128 x 8192 | 19.456 us | 13.312 us | 1.46x |
+| 1024 x 512 | 12.512 us | 11.888 us | 1.05x |
+
+### Stable cold-cache methodology
+
+A dedicated profiler was added:
+
+`benchmarks/layernorm_stable_profile.py`
+
+Method:
+
+1. touch a 64 MiB CUDA buffer before every timed launch;
+2. interleave V2 and V4 at the individual-sample level;
+3. vary order across samples;
+4. run 7 independent rounds x 80 timed launches;
+5. repeat with independent seeds.
+
+### Stable results
+
+Two independent seeds on the initial matrix:
+
+```text
+128 x 4096: 1.407x / 1.379x
+128 x 8192: 1.423x / 1.423x
+1024 x 512: 1.118x / 1.109x
+1024 x 1024: 1.017x / 1.052x
+1024 x 4096: 1.023x / 1.022x
+2048 x 4096: ~1.00x
+```
+
+Additional two-seed sweep:
+
+```text
+256 x 4096: 1.253x / 1.257x
+512 x 4096: 1.181x / 1.184x
+256 x 8192: 1.178x / 1.180x
+512 x 8192: 1.157x / 1.156x
+1536 x 512: 1.059x / 1.068x
+2048 x 512: 1.037x / 1.007x
+1536 x 1024: 1.065x / 1.053x
+2048 x 1024: 0.932x / 0.925x
+```
+
+### Decision
+
+V4 is a real fast path, but not a universal replacement for V2.
+
+A V5 dispatcher should enable V4 only for shapes that pass a conservative repeated cold-cache acceptance gate and use V2 elsewhere.
+
+Artifacts:
+
+- `reports/data/layernorm_v0_v1_v2_v3_v4_rtx4090.csv`
+- `reports/data/layernorm_v4_ptxas_sm89.txt`
+- `reports/data/layernorm_stable_profile_seed1_rtx4090.csv`
+- `reports/data/layernorm_stable_profile_seed2_rtx4090.csv`
+- `reports/data/layernorm_stable_profile_extra_20261007_rtx4090.csv`
+- `reports/data/layernorm_stable_profile_extra_20261008_rtx4090.csv`
