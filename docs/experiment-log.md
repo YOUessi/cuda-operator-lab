@@ -1340,7 +1340,7 @@ For small widths this preserves 8 useful warps per block instead of shrinking th
 
 ## E11 — Softmax V4: packed warp-per-row small-width kernel
 
-Status: **in progress**
+Status: **validated; ready to merge**
 
 ### Hypothesis
 
@@ -1410,3 +1410,168 @@ Added:
 - correctness tests for row counts not divisible by 8;
 - 128/129 dispatch boundary tests;
 - active-stream and output-reuse tests.
+
+
+### Operation 3 — clean Tang hardware regression
+
+Tang fetched the GitHub branch and rebuilt from scratch.
+
+```text
+CUDA 12.8 / sm_89 build: PASS
+full repository pytest: 234 passed
+```
+
+### Operation 4 — ptxas resource capture
+
+The packed-warp kernel compiles to:
+
+```text
+registers/thread: 30
+shared memory/block: 0 B
+barriers: 0
+spill stores: 0
+spill loads: 0
+stack frame: 0 B
+```
+
+For comparison, V2 uses 23 registers/thread, 32 B shared memory/block, and a barrier resource.
+
+The extra register pressure is the cost of keeping each row's reduction entirely within a warp. The packed path removes both shared-memory reduction scratch and block-wide synchronization.
+
+Artifact:
+
+- `reports/data/softmax_v4_ptxas_sm89.txt`
+
+### Operation 5 — Compute Sanitizer across the dispatch boundary
+
+Three representative shapes were validated:
+
+```text
+17 x 65:
+  packed-warp path
+  memcheck: 0 errors
+  racecheck: 0 hazards / 0 errors
+  synccheck: 0 errors
+
+17 x 128:
+  packed-warp boundary
+  memcheck: 0 errors
+  racecheck: 0 hazards / 0 errors
+  synccheck: 0 errors
+
+17 x 129:
+  V2 fallback path
+  memcheck: 0 errors
+  racecheck: 0 hazards / 0 errors
+  synccheck: 0 errors
+```
+
+Artifact:
+
+- `reports/data/softmax_v4_compute_sanitizer.txt`
+
+### Operation 6 — first stable V2 vs V4 benchmark
+
+20 warmups + 100 timed repeats.
+
+The packed path is mostly neutral for low row counts, and can slightly regress:
+
+```text
+128 x 32:
+  V2 10.176 us
+  V4 10.240 us
+
+128 x 64:
+  V2  9.632 us
+  V4 10.208 us
+
+128 x 128:
+  V2 10.080 us
+  V4 10.240 us
+```
+
+At high row counts the scheduling advantage becomes large:
+
+```text
+4096 x 32:
+  V2 17.408 us
+  V4 10.272 us   (~1.69x)
+
+4096 x 64:
+  V2 17.408 us
+  V4 10.368 us   (~1.68x)
+
+4096 x 128:
+  V2 18.432 us
+  V4 10.928 us   (~1.69x)
+```
+
+The 129-column boundary correctly falls back to V2 and is timing-equivalent within run noise.
+
+Artifact:
+
+- `reports/data/softmax_v2_v4_100_rtx4090_laptop.csv`
+
+### Operation 7 — row-count crossover sweep
+
+A dedicated 100-repeat sweep varied rows from 64 to 8192 for widths 32, 64, and 128.
+
+#### cols = 32
+
+```text
+64 rows:   10.240 -> 10.240 us
+128:       10.240 -> 10.240
+256:       10.176 -> 10.240
+512:       10.240 -> 10.240
+1024:      10.240 -> 10.048
+2048:      12.496 -> 10.240   (~1.22x)
+4096:      17.408 -> 10.240   (~1.70x)
+8192:      27.136 -> 10.304   (~2.63x)
+```
+
+#### cols = 64
+
+```text
+1024 rows: 10.240 -> 10.240 us
+2048:      12.592 -> 10.240   (~1.23x)
+4096:      17.440 -> 10.400   (~1.68x)
+8192:      27.648 -> 11.264   (~2.45x)
+```
+
+#### cols = 128
+
+```text
+1024 rows: 10.240 -> 10.240 us
+2048:      13.152 -> 10.240   (~1.28x)
+4096:      18.432 -> 11.008   (~1.67x)
+8192:      28.672 -> 13.312   (~2.15x)
+```
+
+Artifact:
+
+- `reports/data/softmax_v2_v4_rowsweep_100_rtx4090_laptop.csv`
+
+### Interpretation
+
+The V3 negative result was structural: shrinking the block reduced the number of useful warps. V4 keeps eight warps active and maps them to eight independent rows.
+
+That does not matter while row count is small enough that both V2 and V4 remain near the same launch-overhead floor. Once row count grows, V2 launches one 256-thread block per row even though only one warp's worth of work is needed for a <=128-column row. V4 cuts block count by up to 8x and removes cross-warp synchronization.
+
+The measured crossover is unusually clean:
+
+- below 1024 rows: mostly neutral, sometimes slightly worse;
+- at 2048 rows: consistently ~1.22x–1.28x faster across widths 32/64/128;
+- at 4096/8192 rows: 1.67x–2.63x faster.
+
+### Next action
+
+Softmax V5 should convert this experiment into an empirical dispatcher:
+
+```text
+if cols <= 128 and rows >= 2048:
+    packed warp-per-row kernel
+else:
+    V2 one-block-per-row warp-shuffle kernel
+```
+
+V4 remains available as the explicit packed-kernel experiment. V5 should add no new kernel mechanism; it should change dispatch policy only, mirroring Reduction V5.
