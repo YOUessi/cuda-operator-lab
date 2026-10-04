@@ -13,6 +13,7 @@ constexpr int kWarpSize = 32;
 constexpr int kWarpsPerBlock = kReductionThreads / kWarpSize;
 constexpr unsigned int kFullWarpMask = 0xffffffffU;
 constexpr std::uintptr_t kFloat4Alignment = 16U;
+constexpr std::uint64_t kVectorDispatchMinElements = 32768;
 
 __device__ __forceinline__ float warp_reduce_sum(float value) {
   for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
@@ -325,9 +326,13 @@ extern "C" int cuda_operator_reduction_v5(
   }
 
   const std::uint64_t vector_count = n / 4;
-  if (is_float4_aligned(input) && vector_count != 0) {
-    // V5 isolates launch geometry: the kernel body is exactly the V4 float4
-    // kernel, but the grid is sized from the actual vector work-item count.
+  if (is_float4_aligned(input) &&
+      n >= kVectorDispatchMinElements &&
+      vector_count != 0) {
+    // V5 isolates dispatch/launch geometry: the kernel body is exactly the
+    // V4 float4 kernel, but the grid is sized from actual vector work items.
+    // The 32K crossover is empirical: hot-cache sweeps showed a small-shape
+    // regression at 16K and no regression from 32K upward.
     reduction_v4_float4_kernel<<<
         reduction_block_count_for_work_items(vector_count),
         kReductionThreads,
