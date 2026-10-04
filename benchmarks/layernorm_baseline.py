@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import layernorm_v0_into, layernorm_v1_into, layernorm_v2_into
+from cuda_operator_lab.bindings import layernorm_v0_into, layernorm_v1_into, layernorm_v2_into, layernorm_v3_into
 from cuda_operator_lab.references import layernorm
 
 
@@ -78,6 +78,7 @@ def main() -> None:
             ("v0_serial_row", layernorm_v0_into),
             ("v1_block_shared", layernorm_v1_into),
             ("v2_warp_shuffle", layernorm_v2_into),
+            ("v3_welford", layernorm_v3_into),
         ]
         torch_times = measure_us(
             lambda: layernorm(x, weight, bias, args.eps),
