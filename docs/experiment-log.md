@@ -913,3 +913,64 @@ Planned hardware validation:
 - Compute Sanitizer memcheck / racecheck / synccheck;
 - ptxas resource capture;
 - V1 vs V2 benchmark on the same Softmax shape matrix.
+
+
+### Operation 2 — GitHub implementation completed
+
+Implemented Softmax V2 directly on the GitHub feature branch without editing Tang locally.
+
+Changed:
+
+- `csrc/softmax/softmax.cu`: add two-level warp-shuffle max/sum reductions;
+- `csrc/softmax/softmax.cuh`: expose `cuda_operator_softmax_v2`;
+- `python/cuda_operator_lab/bindings.py`: add V2 ctypes binding;
+- `benchmarks/softmax_benchmark.py`: add `v2_warp_shuffle`;
+- `tests/test_softmax_v2.py`: add warp/block boundary, wide-row, stability, stream, output-reuse, and row-normalization coverage.
+
+The V2 reduction structure is:
+
+```text
+thread-local max
+  -> warp max via __shfl_down_sync
+  -> 8 warp maxima in shared memory
+  -> first warp final max
+  -> row_max
+
+thread-local exp sum
+  -> warp sum via __shfl_down_sync
+  -> 8 warp sums in shared memory
+  -> first warp final sum
+  -> denominator
+```
+
+Only 8 float partials are stored in shared memory. The one-block-per-row launch, 256 threads/block, column traversal, exponentiation pass, and normalization pass are intentionally unchanged from V1.
+
+A safety barrier is kept after all threads load the final row maximum before the shared partial buffer is reused for the denominator reduction. This directly preserves the Racecheck lesson from V1.
+
+GitHub commits in this operation:
+
+- `9667d1f`: expose V2 C ABI;
+- `4b3b919`: add warp-shuffle Softmax kernel;
+- `1fe3cc8`: bind V2 in Python;
+- `a1304c5`: add V2 benchmark variant;
+- `a8167d1`: add V2 correctness tests.
+
+### Operation 3 — real-GPU validation gate attempted
+
+A Tang hardware-validation run was requested after the GitHub implementation.
+
+Result:
+
+```text
+Tang device status: OFFLINE
+last seen: approximately 3 hours before validation attempt
+```
+
+Therefore no CUDA build, pytest, benchmark, sanitizer, or ptxas result is claimed yet for V2.
+
+Decision:
+
+- keep the branch unmerged;
+- do not invent performance numbers;
+- do not start Softmax V3 before V2 receives real RTX 4090 validation;
+- resume at the clean-build step when Tang is online.
