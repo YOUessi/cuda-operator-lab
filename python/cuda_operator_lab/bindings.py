@@ -46,14 +46,19 @@ class _Library:
             ]
             function.restype = ctypes.c_int
 
-        self.handle.cuda_operator_softmax_v0.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_uint64,
-            ctypes.c_uint64,
-            ctypes.c_void_p,
-        ]
-        self.handle.cuda_operator_softmax_v0.restype = ctypes.c_int
+        for name in (
+            "cuda_operator_softmax_v0",
+            "cuda_operator_softmax_v1",
+        ):
+            function = getattr(self.handle, name)
+            function.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_uint64,
+                ctypes.c_uint64,
+                ctypes.c_void_p,
+            ]
+            function.restype = ctypes.c_int
 
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
@@ -199,8 +204,11 @@ def _validate_softmax_output(x: torch.Tensor, out: torch.Tensor) -> None:
         )
 
 
-def softmax_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
-    """Launch V0: one CUDA thread serially computes one row."""
+def _softmax_into(
+    symbol: str,
+    x: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
     _validate_softmax_input(x)
     _validate_softmax_output(x, out)
 
@@ -210,7 +218,8 @@ def softmax_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 
     library = _library()
     stream = torch.cuda.current_stream(device=x.device)
-    code = library.handle.cuda_operator_softmax_v0(
+    function = getattr(library.handle, symbol)
+    code = function(
         ctypes.c_void_p(x.data_ptr()),
         ctypes.c_void_p(out.data_ptr()),
         ctypes.c_uint64(rows),
@@ -221,7 +230,23 @@ def softmax_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def softmax_v0_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V0: one CUDA thread serially computes one row."""
+    return _softmax_into("cuda_operator_softmax_v0", x, out)
+
+
 def softmax_v0(x: torch.Tensor) -> torch.Tensor:
     """Return row-wise Softmax V0 output."""
     out = torch.empty_like(x)
     return softmax_v0_into(x, out)
+
+
+def softmax_v1_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V1: one CUDA block cooperatively computes one row."""
+    return _softmax_into("cuda_operator_softmax_v1", x, out)
+
+
+def softmax_v1(x: torch.Tensor) -> torch.Tensor:
+    """Return row-wise Softmax V1 output."""
+    out = torch.empty_like(x)
+    return softmax_v1_into(x, out)
