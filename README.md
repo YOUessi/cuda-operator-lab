@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Reduction V4
+## Current milestone: Reduction V5
 
 Reduction now has four deliberately separated implementations:
 
@@ -31,13 +31,14 @@ Reduction now has four deliberately separated implementations:
 - **V2 shared memory:** full shared-memory tree reduction per block, then one global `atomicAdd` per block.
 - **V3 warp shuffle:** reduce inside each warp with `__shfl_down_sync`, store only one value per warp in shared memory, then use the first warp to finish the block reduction.
 - **V4 float4 loads:** keep the V3 reduction tree but consume aligned input four floats at a time with a 128-bit global load; unaligned contiguous tensors safely fall back to V3.
+- **V5 shape-aware dispatch:** size the vector grid from N/4 work items and use the vector path only from an empirically validated 512K crossover; smaller or unaligned inputs use V3.
 
-V4 preserves the same 256-thread / 1,024-block launch policy and the same warp-shuffle block reduction as V3. The only intended fast-path change is the aligned input load: scalar float loads become float4 loads plus a scalar tail.
+V5 keeps the V4 kernel body unchanged and fixes dispatch/launch policy: vector blocks are computed from N/4 float4 work items rather than scalar N. A conservative 524,288-element crossover is used because cross-regime sweeps showed small-shape results were cache-state sensitive.
 
 Implemented now:
 
 - PyTorch `torch.sum` reference.
-- CUDA V0 / V1 / V2 / V3 / V4 kernels behind a small C ABI.
+- CUDA V0 / V1 / V2 / V3 / V4 / V5 kernels behind a small C ABI.
 - Zero-copy PyTorch/ctypes binding using raw CUDA pointers and the active PyTorch CUDA stream.
 - Correctness coverage for empty, warp-boundary, block-boundary, odd, signed and million-element inputs.
 - Reused-output reset and non-default CUDA stream tests.
@@ -91,6 +92,35 @@ The optimization is shape-dependent. At 16M elements the 128-bit load path impro
 
 That gives the next bottleneck directly: V5 should make launch geometry / elements-per-thread shape-aware rather than blindly applying vector loads to every shape.
 
+### V5 shape-aware dispatch result
+
+V5 fixes the V4 grid mismatch without changing the float4 kernel body.
+
+```text
+N < 524,288
+  -> V3 scalar warp-shuffle path
+
+N >= 524,288 and pointer % 16 == 0
+  -> V4 float4 kernel
+  -> blocks computed from N/4 vector work items
+
+unaligned
+  -> V3 fallback
+```
+
+Final clean validation: **116 tests passed**.
+
+L2-evicted, 20 warmups + 100 repeats:
+
+| N | V3 scalar | V5 dispatch | torch.sum | V5 logical GB/s |
+|---:|---:|---:|---:|---:|
+| 524,288 | 10.256 us | 10.240 us | 12.288 us | 204.800 |
+| 1,048,576 | 17.008 us | **15.376 us** | 17.408 us | 272.783 |
+| 4,194,304 | 47.104 us | **45.152 us** | 48.128 us | 371.572 |
+| 16,777,216 | 176.128 us | **167.936 us** | 170.896 us | 399.610 |
+
+The detailed step-by-step record, including preliminary thresholds and all raw benchmark artifacts, is in `docs/experiment-log.md`.
+
 ### Compute Sanitizer
 
 CUDA 12.8 Compute Sanitizer on a representative `N=1,000,003` signed float32 input:
@@ -108,7 +138,7 @@ CUDA 12.8 Compute Sanitizer on a representative `N=1,000,003` signed float32 inp
 
 PYTHONPATH=$PWD/python \
 python3 benchmarks/reduction_benchmark.py \
-  --variants v2_shared_memory v3_warp_shuffle \
+  --variants v3_warp_shuffle v5_shape_aware_float4 \
   --cache-mode cold
 ```
 
