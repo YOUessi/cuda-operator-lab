@@ -2508,3 +2508,31 @@ Current status:
 - profiling methodology: stabilized enough for a hardware-specific static profile;
 - policy scope: RTX 4090 Laptop measured profile only;
 - unlisted shapes: V2 fallback.
+
+## E18 — LayerNorm V0: serial row baseline
+
+Status: **implementation complete; awaiting Tang hardware validation**
+
+Branch:
+
+`feat/layernorm-v0-baseline`
+
+V0 scope:
+
+- float32;
+- contiguous 2-D input `[rows, cols]`;
+- 1-D weight and bias `[cols]`;
+- positive epsilon;
+- one CUDA thread per row;
+- three serial passes: mean, variance, affine output;
+- active PyTorch CUDA stream propagated through the C ABI.
+
+Reference: PyTorch `torch.nn.functional.layer_norm`.
+
+Next validation gate:
+
+- clean CUDA 12.8 / SM 8.9 build;
+- full pytest;
+- benchmark versus PyTorch LayerNorm;
+- ptxas resource capture;
+- Compute Sanitizer memcheck/racecheck/synccheck.
