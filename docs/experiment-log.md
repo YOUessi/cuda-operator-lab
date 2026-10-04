@@ -1334,3 +1334,89 @@ Softmax V4 should keep a full 256-thread block but assign **one warp per small r
 ```
 
 For small widths this preserves 8 useful warps per block instead of shrinking the block to 1–4 warps. Wider rows will fall back to the validated V2 one-block-per-row path.
+
+
+### E10 addendum — high-row-count revalidation changes the V3 conclusion
+
+The original V3 sweep covered 128-row and 1024-row shapes and concluded that width-aware block shrinkage was too shape-sensitive to use as a default policy.
+
+After Tang reconnected, the same already-merged V3 implementation was revalidated on larger row counts before moving on.
+
+Protocol:
+
+- current `main` Softmax V3 implementation;
+- 20 warmups;
+- 100 timed repeats;
+- V2 fixed-256 versus V3 width-aware;
+- no code changes between the two variants other than the existing V3 launch policy.
+
+Results:
+
+| Shape | V2 fixed 256 | V3 width-aware | V2 -> V3 | PyTorch |
+|---:|---:|---:|---:|---:|
+| 4096 x 32 | 17.408 us | **10.256 us** | **1.70x** | 8.160 us |
+| 4096 x 64 | 17.408 us | **11.264 us** | **1.55x** | 7.456 us |
+| 4096 x 128 | 18.080 us | **13.968 us** | **1.29x** | 8.000 us |
+| 16384 x 32 | 46.128 us | **18.432 us** | **2.50x** | 7.168 us |
+| 16384 x 64 | 47.104 us | **21.520 us** | **2.19x** | 8.864 us |
+| 16384 x 128 | 49.152 us | **32.448 us** | **1.51x** | 11.136 us |
+
+Artifact:
+
+- `reports/data/softmax_v2_v3_highrows_revalidation100_rtx4090.csv`
+
+Revised interpretation:
+
+- V3 is near-neutral or shape-sensitive at low/moderate row counts;
+- V3 is clearly beneficial for high-row-count narrow matrices;
+- the previous “negative experiment” label was therefore incomplete rather than wrong;
+- the useful condition is **narrow width + enough rows for oversized 256-thread blocks to become a scheduling cost**.
+
+This addendum is kept instead of rewriting the earlier E10 section so the project preserves how the conclusion evolved when a missing workload regime was added.
+
+---
+
+## E11 — Softmax V4: one warp per row, multiple rows per block
+
+Status: **in progress**
+
+### Hypothesis
+
+V3 proves that 256 threads per narrow row wastes scheduling capacity when row count is high. However, simply shrinking each block to one or two warps can reduce the number of useful warps resident in a block and gives limited benefit at lower row counts.
+
+V4 will test a different layout for narrow rows:
+
+```text
+one 256-thread block
+  -> 8 warps
+  -> each warp owns one row
+  -> up to 8 rows processed per block
+```
+
+This keeps a full 8-warps-per-block launch while eliminating cross-warp reduction for each row.
+
+### Operation 1 — scope lock
+
+V4 will be isolated to `cols <= 128`.
+
+For each warp-owned row:
+
+- lane-stride max over the row;
+- warp-only `__shfl_down_sync` max;
+- warp-only exp + denominator sum;
+- warp-only `__shfl_down_sync` sum;
+- warp-only normalize.
+
+No shared memory and no block-wide synchronization should be required for the packed path.
+
+For `cols > 128`, V4 will fall back to the already validated V2/V3 path instead of changing wide-row behavior.
+
+The first implementation will use 8 rows per 256-thread block for all `cols <= 128`; if this regresses 128-column rows, a later dispatch threshold can be derived from measured data rather than guessed.
+
+Planned evidence:
+
+- clean CUDA build and full pytest;
+- boundary correctness at 31/32/33, 63/64/65, 127/128/129;
+- Compute Sanitizer memcheck / racecheck / synccheck;
+- ptxas resources;
+- V3 versus V4 benchmark at 128 / 1024 / 4096 / 16384 rows.
