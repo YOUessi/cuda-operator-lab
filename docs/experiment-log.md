@@ -647,6 +647,58 @@ Warp shuffle is intentionally deferred to a later version so the value of basic 
 
 ---
 
+## E08 — Softmax V1: one block per row + shared-memory reductions
+
+Status: **in progress**
+
+### Hypothesis
+
+Softmax V0 is dominated by serial work inside each row. Giving one CUDA block to each row should expose 256-way intra-row parallelism while preserving the same three mathematical stages.
+
+### Operation 1 — GitHub implementation
+
+V1 uses one 256-thread block per row.
+
+Each thread performs strided column work:
+
+```text
+thread-local max
+  -> shared[256]
+  -> shared-memory max tree
+  -> row max
+
+parallel exp(x - row_max)
+  -> thread-local denominator sum
+  -> shared[256]
+  -> shared-memory sum tree
+  -> denominator
+
+parallel normalize
+```
+
+This version intentionally uses a full shared-memory tree with `__syncthreads()` at every level. Warp shuffle is deferred so the gain from basic intra-row parallelism can be measured independently.
+
+Added:
+
+- `cuda_operator_softmax_v1` C ABI;
+- Python binding;
+- V1 correctness tests including 255/256/257 and 511/512/513 widths;
+- extreme-logit stability;
+- output reuse and current-stream checks;
+- `benchmarks/softmax_benchmark.py` comparing V0 / V1 / PyTorch.
+
+### Required hardware validation
+
+- clean CUDA 12.8 / SM 8.9 build;
+- complete repository regression suite;
+- wide-row numerical correctness;
+- V0 vs V1 benchmark over the same row × column matrix;
+- ptxas resource capture;
+- Compute Sanitizer on a non-power-of-two width;
+- derive the V2 bottleneck from measured V1 behavior.
+
+---
+
 ## Template for future experiments
 
 ### Hypothesis
