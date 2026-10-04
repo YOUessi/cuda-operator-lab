@@ -1,0 +1,24 @@
+CUDA 12.8 / SM 8.9 ptxas — Softmax V3 final
+
+softmax_v3_width_row_kernel<128>:
+  registers/thread: 32
+  shared memory/block: 16 bytes
+  spills: 0
+  barrier resource: used
+
+softmax_v3_width_row_kernel<64>:
+  registers/thread: 32
+  shared memory/block: 8 bytes
+  spills: 0
+  barrier resource: used
+
+softmax_v3_width_row_kernel<32>:
+  registers/thread: 28
+  shared memory/block: 0 bytes
+  spills: 0
+  barrier resource: none
+
+softmax_v2_warp_row_kernel<fixed 256>:
+  registers/thread: 23
+  shared memory/block: 32 bytes
+  spills: 0
