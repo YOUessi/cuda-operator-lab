@@ -310,3 +310,59 @@ Validation:
 Performance was not robustly positive. Stable runs showed neutral behavior at several widths, ~2% improvement at 1024 x 128, but regressions at 128 x 32 and 1024 x 64.
 
 Decision: record V3 as a valid negative experiment. Small-row optimization should preserve a full block and pack multiple rows across warps instead of shrinking each row's block.
+
+
+## Softmax V4 warp-per-row packing
+
+V4 changes the narrow-row execution layout:
+
+- 256 threads/block;
+- 8 warps/block;
+- one warp owns one row;
+- up to 8 rows/block;
+- no shared memory and no block-wide barriers on the packed path;
+- wider rows fall back to V3.
+
+Validation:
+
+- full suite: 229 passed;
+- memcheck/racecheck/synccheck clean;
+- ptxas: 30 registers/thread, 0 B shared memory, 0 spills.
+
+At high row counts V4 is materially better than V3, e.g. 16384 x 128 improves from about 32.75 us to 19.14 us, but 128 x 128 regresses. This motivates a measured dispatcher.
+
+## Softmax V5 empirical shape dispatch
+
+V5 is dispatch-only: no new device kernel.
+
+Crossover sweep:
+
+- widths 32 / 64 / 128;
+- rows 128 through 16384;
+- 20 warmups + 100 repeats.
+
+Final policy:
+
+- cols <= 64 and rows >= 4096 -> V4 packed;
+- 65..128 cols and rows >= 2048 -> V4 packed;
+- otherwise -> V3 width-aware.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **250 passed**;
+- Python compileall: PASS;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors.
+
+Final representative timings:
+
+- 2048 x 128: V3 11.264 us -> V5 10.592 us;
+- 4096 x 64: V3 11.264 us -> V5 10.496 us;
+- 4096 x 128: V3 14.336 us -> V5 10.912 us;
+- 16384 x 128: V3 32.704 us -> V5 18.528 us.
+
+A benchmark-reporting bug was caught during validation: V5 fallback calls were executing the correct V3 kernels but reporting 256 threads/block in CSV metadata. The reporting logic was fixed and the final benchmark was regenerated.
+
+Decision: stop deepening Softmax after V5 and move to RMSNorm.
