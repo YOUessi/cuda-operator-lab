@@ -604,3 +604,28 @@ Representative V0 -> V1:
 The 128 x 512 result is effectively equal to the PyTorch LayerNorm reference in this run. Wider/high-row cases still leave 10–40% headroom.
 
 Next: replace both full shared-memory trees with warp-shuffle reductions while keeping scalar IO and the two-pass mean/variance structure unchanged.
+
+## LayerNorm V2 warp-shuffle reductions
+
+V2 preserves the V1 two-pass LayerNorm structure and scalar IO, but replaces both 256-entry shared-memory trees with two-level warp-shuffle reductions.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **419 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- V2 ptxas: 23 registers/thread, 32 B shared memory/block, 0 spills.
+
+Selected V1 -> V2:
+
+- 1024 x 128: 14.336 us -> 11.264 us (~1.27x);
+- 1024 x 512: 15.360 us -> 12.288 us (~1.25x);
+- 1024 x 4096: 34.816 us -> 31.856 us (~1.09x);
+- 128 x 512: 10.528 us -> 10.272 us;
+- 128 x 4096: 14.336 us -> 14.272 us (neutral).
+
+Shared reduction scratch falls from 1024 B to 32 B, but wide low-row workloads are already close to memory/math limits.
+
+Next: evaluate Welford online mean/variance to combine statistics into one numerically stable pass before vectorized IO.
