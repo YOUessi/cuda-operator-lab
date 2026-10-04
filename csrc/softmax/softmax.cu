@@ -292,6 +292,48 @@ __global__ void softmax_v3_width_aware_kernel(
   }
 }
 
+
+__global__ void softmax_v4_packed_warp_rows_kernel(
+    const float* input,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols) {
+  const int lane = threadIdx.x & (kWarpSize - 1);
+  const int warp_id = threadIdx.x / kWarpSize;
+  const std::uint64_t row =
+      static_cast<std::uint64_t>(blockIdx.x) * kMaxWarpsPerBlock + warp_id;
+
+  if (row >= rows) {
+    return;
+  }
+
+  const float* row_input = input + row * cols;
+  float* row_output = output + row * cols;
+
+  float local_max = -FLT_MAX;
+  for (std::uint64_t col = lane; col < cols; col += kWarpSize) {
+    local_max = fmaxf(local_max, row_input[col]);
+  }
+
+  const float reduced_max = warp_reduce_max(local_max);
+  const float row_max = __shfl_sync(kFullWarpMask, reduced_max, 0);
+
+  float local_sum = 0.0F;
+  for (std::uint64_t col = lane; col < cols; col += kWarpSize) {
+    const float value = expf(row_input[col] - row_max);
+    row_output[col] = value;
+    local_sum += value;
+  }
+
+  const float reduced_sum = warp_reduce_sum(local_sum);
+  const float denominator = __shfl_sync(kFullWarpMask, reduced_sum, 0);
+  const float inverse_denominator = 1.0F / denominator;
+
+  for (std::uint64_t col = lane; col < cols; col += kWarpSize) {
+    row_output[col] *= inverse_denominator;
+  }
+}
+
 int validate_softmax_arguments(
     const float* input,
     float* output,
@@ -406,5 +448,39 @@ extern "C" int cuda_operator_softmax_v3(
       softmax_v3_thread_count(cols),
       0,
       cuda_stream>>>(input, output, rows, cols);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_softmax_v4(
+    const float* input,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    void* stream) {
+  const int validation =
+      validate_softmax_arguments(input, output, rows, cols);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  if (cols <= 128) {
+    const std::uint64_t required_blocks =
+        (rows + kMaxWarpsPerBlock - 1) / kMaxWarpsPerBlock;
+    softmax_v4_packed_warp_rows_kernel<<<
+        static_cast<unsigned int>(required_blocks),
+        kSoftmaxBlockThreads,
+        0,
+        cuda_stream>>>(input, output, rows, cols);
+  } else {
+    softmax_v2_warp_row_kernel<<<
+        static_cast<unsigned int>(rows),
+        kSoftmaxBlockThreads,
+        0,
+        cuda_stream>>>(input, output, rows, cols);
+  }
+
   return static_cast<int>(cudaGetLastError());
 }
