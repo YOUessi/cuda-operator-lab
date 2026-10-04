@@ -1334,3 +1334,51 @@ Softmax V4 should keep a full 256-thread block but assign **one warp per small r
 ```
 
 For small widths this preserves 8 useful warps per block instead of shrinking the block to 1–4 warps. Wider rows will fall back to the validated V2 one-block-per-row path.
+
+
+---
+
+## E11 — Softmax V4: packed warp-per-row small-width kernel
+
+Status: **in progress**
+
+### Hypothesis
+
+Softmax V3 showed that shrinking a one-row block to 1–4 warps is not a robust optimization. The structural issue is one block being tied to one small row.
+
+For `cols <= 128`, a single warp can process one row in 1–4 lane-stride iterations. A 256-thread block contains 8 warps, so packing 8 rows per block should:
+
+- keep all 8 warps useful;
+- remove cross-warp shared-memory reduction for each row;
+- remove block-wide barriers on the packed small-row path;
+- reduce block count by up to 8x.
+
+### Operation 1 — branch and scope lock
+
+Created:
+
+```text
+feat/softmax-v4-packed-warps
+```
+
+Planned V4 dispatch:
+
+```text
+cols <= 128
+  -> 256-thread block
+  -> 8 independent warps
+  -> one row per warp
+  -> up to 8 rows/block
+
+cols > 128
+  -> validated V2 one-block-per-row warp-shuffle path
+```
+
+Held constant:
+
+- float32 Softmax semantics;
+- max subtraction for numerical stability;
+- separate max / exp-sum / normalize passes;
+- no float4/vectorized IO yet.
+
+This experiment directly tests the scheduling/packing hypothesis revealed by V3.
