@@ -9,6 +9,7 @@ namespace {
 constexpr int kLayerNormV0Threads = 128;
 constexpr int kLayerNormV1Threads = 256;
 constexpr int kLayerNormV2Threads = 256;
+constexpr int kLayerNormV3Threads = 256;
 constexpr int kWarpSize = 32;
 constexpr int kWarpsPerBlock = kLayerNormV2Threads / kWarpSize;
 constexpr unsigned int kFullWarpMask = 0xffffffffU;
@@ -18,6 +19,50 @@ __device__ __forceinline__ float warp_reduce_sum(float value) {
     value += __shfl_down_sync(kFullWarpMask, value, offset);
   }
   return value;
+}
+
+struct WelfordState {
+  float mean;
+  float m2;
+  unsigned int count;
+};
+
+__device__ __forceinline__ WelfordState welford_combine(
+    WelfordState a,
+    WelfordState b) {
+  if (b.count == 0) {
+    return a;
+  }
+  if (a.count == 0) {
+    return b;
+  }
+
+  const float delta = b.mean - a.mean;
+  const unsigned int count = a.count + b.count;
+  const float b_fraction =
+      static_cast<float>(b.count) / static_cast<float>(count);
+
+  WelfordState out;
+  out.mean = a.mean + delta * b_fraction;
+  out.m2 =
+      a.m2 + b.m2 +
+      delta * delta *
+          (static_cast<float>(a.count) * static_cast<float>(b.count) /
+           static_cast<float>(count));
+  out.count = count;
+  return out;
+}
+
+__device__ __forceinline__ WelfordState warp_reduce_welford(
+    WelfordState state) {
+  for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+    WelfordState other;
+    other.mean = __shfl_down_sync(kFullWarpMask, state.mean, offset);
+    other.m2 = __shfl_down_sync(kFullWarpMask, state.m2, offset);
+    other.count = __shfl_down_sync(kFullWarpMask, state.count, offset);
+    state = welford_combine(state, other);
+  }
+  return state;
 }
 
 __global__ void layernorm_v0_serial_row_kernel(
@@ -208,6 +253,74 @@ __global__ void layernorm_v2_warp_row_kernel(
   }
 }
 
+__global__ void layernorm_v3_welford_row_kernel(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps) {
+  __shared__ float warp_means[kWarpsPerBlock];
+  __shared__ float warp_m2[kWarpsPerBlock];
+  __shared__ unsigned int warp_counts[kWarpsPerBlock];
+
+  const std::uint64_t row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+
+  const unsigned int tid = threadIdx.x;
+  const int lane = tid & (kWarpSize - 1);
+  const int warp_id = tid / kWarpSize;
+  const float* row_input = input + row * cols;
+  float* row_output = output + row * cols;
+
+  WelfordState local{0.0F, 0.0F, 0U};
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    const float value = row_input[col];
+    const unsigned int next_count = local.count + 1U;
+    const float delta = value - local.mean;
+    local.mean += delta / static_cast<float>(next_count);
+    const float delta2 = value - local.mean;
+    local.m2 += delta * delta2;
+    local.count = next_count;
+  }
+
+  local = warp_reduce_welford(local);
+  if (lane == 0) {
+    warp_means[warp_id] = local.mean;
+    warp_m2[warp_id] = local.m2;
+    warp_counts[warp_id] = local.count;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    WelfordState block_state{0.0F, 0.0F, 0U};
+    if (lane < kWarpsPerBlock) {
+      block_state.mean = warp_means[lane];
+      block_state.m2 = warp_m2[lane];
+      block_state.count = warp_counts[lane];
+    }
+    block_state = warp_reduce_welford(block_state);
+    if (lane == 0) {
+      warp_means[0] = block_state.mean;
+      const float variance =
+          block_state.m2 / static_cast<float>(block_state.count);
+      warp_m2[0] = rsqrtf(variance + eps);
+    }
+  }
+  __syncthreads();
+
+  const float mean = warp_means[0];
+  const float inverse_std = warp_m2[0];
+
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    const float normalized = (row_input[col] - mean) * inverse_std;
+    row_output[col] = normalized * weight[col] + bias[col];
+  }
+}
+
 int validate_layernorm_arguments(
     const float* input,
     const float* weight,
@@ -303,6 +416,31 @@ extern "C" int cuda_operator_layernorm_v2(
   layernorm_v2_warp_row_kernel<<<
       static_cast<unsigned int>(rows),
       kLayerNormV2Threads,
+      0,
+      cuda_stream>>>(input, weight, bias, output, rows, cols, eps);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_layernorm_v3(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps,
+    void* stream) {
+  const int validation =
+      validate_layernorm_arguments(input, weight, bias, output, rows, cols, eps);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  layernorm_v3_welford_row_kernel<<<
+      static_cast<unsigned int>(rows),
+      kLayerNormV3Threads,
       0,
       cuda_stream>>>(input, weight, bias, output, rows, cols, eps);
   return static_cast<int>(cudaGetLastError());
