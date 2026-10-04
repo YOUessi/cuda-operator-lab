@@ -14,6 +14,7 @@ from cuda_operator_lab.bindings import (
     rmsnorm_v0_into,
     rmsnorm_v1_into,
     rmsnorm_v2_into,
+    rmsnorm_v3_into,
 )
 from cuda_operator_lab.references import rmsnorm
 
@@ -69,6 +70,7 @@ def main() -> None:
         ("v0_serial_row", rmsnorm_v0_into),
         ("v1_block_shared", rmsnorm_v1_into),
         ("v2_warp_shuffle", rmsnorm_v2_into),
+        ("v3_float4_io", rmsnorm_v3_into),
     ]
     rows_out: list[dict[str, object]] = []
     print(f"device={torch.cuda.get_device_name(0)}")
