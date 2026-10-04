@@ -1185,3 +1185,29 @@ Planned evidence:
 - ptxas resources;
 - boundary benchmark around 32/64/128/256 columns;
 - stable V2 vs V3 benchmark on 128-row and 1024-row shapes.
+
+
+### Operation 2 — GitHub implementation
+
+Implemented V3 entirely on GitHub.
+
+Changed:
+
+- `csrc/softmax/softmax.cu`: add dynamic-warp-count reduction helpers and width-aware launch;
+- `csrc/softmax/softmax.cuh`: expose V3 C ABI;
+- `python/cuda_operator_lab/bindings.py`: bind V3;
+- `benchmarks/softmax_benchmark.py`: add V3 and record threads/block;
+- `tests/test_softmax_v3.py`: add dispatch-boundary correctness coverage.
+
+Dispatch policy:
+
+```text
+1..32 cols    -> 32 threads
+33..64 cols   -> 64 threads
+65..128 cols  -> 128 threads
+>128 cols     -> 256 threads
+```
+
+The dynamic reduction helpers compute `warp_count = blockDim.x / 32` so only launched warps contribute to the first-warp final reduction.
+
+V2 remains unchanged and fixed at 256 threads/block for direct A/B comparison.
