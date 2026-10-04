@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import layernorm_v0_into
+from cuda_operator_lab.bindings import layernorm_v0_into, layernorm_v1_into
 from cuda_operator_lab.references import layernorm
 
 
@@ -74,43 +74,57 @@ def main() -> None:
             float((actual - expected).abs().max().item()) if x.numel() else 0.0
         )
 
-        ours = measure_us(
-            lambda: layernorm_v0_into(x, weight, bias, out, args.eps),
-            warmup=args.warmup,
-            repeats=args.repeats,
-        )
+        variants = [
+            ("v0_serial_row", layernorm_v0_into),
+            ("v1_block_shared", layernorm_v1_into),
+        ]
         torch_times = measure_us(
             lambda: layernorm(x, weight, bias, args.eps),
             warmup=args.warmup,
             repeats=args.repeats,
         )
-        ours_median, _, ours_p95 = summarize(ours)
         torch_median, _, torch_p95 = summarize(torch_times)
 
-        record = {
-            "operator": "layernorm",
-            "variant": "v0_serial_row",
-            "dtype": "float32",
-            "rows": rows,
-            "cols": cols,
-            "median_us": round(ours_median, 3),
-            "p95_us": round(ours_p95, 3),
-            "torch_median_us": round(torch_median, 3),
-            "torch_p95_us": round(torch_p95, 3),
-            "slowdown_vs_torch": round(ours_median / torch_median, 3)
-            if torch_median
-            else None,
-            "max_abs_error": max_abs_error,
-        }
-        records.append(record)
+        for name, implementation in variants:
+            out = torch.empty_like(x)
+            actual = implementation(x, weight, bias, out, args.eps)
+            torch.cuda.synchronize()
+            max_abs_error = (
+                float((actual - expected).abs().max().item()) if x.numel() else 0.0
+            )
+            ours = measure_us(
+                lambda implementation=implementation, out=out: implementation(
+                    x, weight, bias, out, args.eps
+                ),
+                warmup=args.warmup,
+                repeats=args.repeats,
+            )
+            ours_median, _, ours_p95 = summarize(ours)
 
-        print(
-            f"shape={rows:>4}x{cols:<5} "
-            f"v0={ours_median:>10.3f} us  "
-            f"torch={torch_median:>9.3f} us  "
-            f"slowdown={ours_median/torch_median:>8.2f}x  "
-            f"max_abs={max_abs_error:.3e}"
-        )
+            record = {
+                "operator": "layernorm",
+                "variant": name,
+                "dtype": "float32",
+                "rows": rows,
+                "cols": cols,
+                "median_us": round(ours_median, 3),
+                "p95_us": round(ours_p95, 3),
+                "torch_median_us": round(torch_median, 3),
+                "torch_p95_us": round(torch_p95, 3),
+                "slowdown_vs_torch": round(ours_median / torch_median, 3)
+                if torch_median
+                else None,
+                "max_abs_error": max_abs_error,
+            }
+            records.append(record)
+
+            print(
+                f"shape={rows:>4}x{cols:<5} "
+                f"{name:<16} {ours_median:>10.3f} us  "
+                f"torch={torch_median:>9.3f} us  "
+                f"slowdown={ours_median/torch_median:>8.2f}x  "
+                f"max_abs={max_abs_error:.3e}"
+            )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8") as handle:
