@@ -313,3 +313,79 @@ Raw artifacts:
 - `reports/data/softmax_v2_v3_100_rtx4090_laptop.csv`
 - `reports/data/softmax_v3_ptxas_sm89.txt`
 - `reports/data/softmax_v3_compute_sanitizer.txt`
+
+
+---
+
+## V4 — packed warp-per-row kernel for small widths
+
+### Change
+
+For `cols <= 128`, V4 keeps a full 256-thread block but assigns one independent row to each warp:
+
+```text
+256-thread block
+  -> 8 warps
+  -> 8 rows/block
+  -> each warp performs max / exp-sum / normalize for one row
+```
+
+No shared memory or block-wide barrier is required on this packed path. For `cols > 128`, V4 dispatches to V2.
+
+### Validation
+
+- clean build: PASS;
+- full repository suite: **234 passed**;
+- packed-path memcheck/racecheck/synccheck: clean;
+- 128/129 dispatch boundary sanitizer: clean;
+- ptxas packed kernel: 30 registers/thread, 0 B shared memory, 0 barriers, 0 spills.
+
+### Performance
+
+The important variable is now row count.
+
+At 4096 rows:
+
+| Shape | V2 | V4 packed | V2 -> V4 | PyTorch |
+|---:|---:|---:|---:|---:|
+| 4096 x 32 | 17.408 us | **10.272 us** | 1.69x | 8.064 us |
+| 4096 x 64 | 17.408 us | **10.368 us** | 1.68x | 8.192 us |
+| 4096 x 128 | 18.432 us | **10.928 us** | 1.69x | 8.192 us |
+
+At 8192 rows:
+
+| Shape | V2 | V4 packed | V2 -> V4 |
+|---:|---:|---:|---:|
+| 8192 x 32 | 27.136 us | **10.304 us** | **2.63x** |
+| 8192 x 64 | 27.648 us | **11.264 us** | **2.45x** |
+| 8192 x 128 | 28.672 us | **13.312 us** | **2.15x** |
+
+For low row counts, the packed path is neutral or sometimes slightly worse. A row-count sweep shows the first robust crossover at roughly **2048 rows** for all tested widths <=128.
+
+### Interpretation
+
+The benefit comes from scheduling, not new arithmetic:
+
+- V2: one 256-thread block per small row;
+- V4: one 256-thread block per eight small rows.
+
+Packing preserves eight useful warps per block, removes cross-warp reduction/synchronization, and greatly reduces block count when there are many rows.
+
+### V5 hypothesis
+
+Use the packed kernel only when its measured benefit is robust:
+
+```text
+cols <= 128 and rows >= 2048
+  -> packed V4 kernel
+
+otherwise
+  -> V2 kernel
+```
+
+Raw artifacts:
+
+- `reports/data/softmax_v2_v4_100_rtx4090_laptop.csv`
+- `reports/data/softmax_v2_v4_rowsweep_100_rtx4090_laptop.csv`
+- `reports/data/softmax_v4_ptxas_sm89.txt`
+- `reports/data/softmax_v4_compute_sanitizer.txt`
