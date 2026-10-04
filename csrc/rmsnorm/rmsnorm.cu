@@ -343,3 +343,57 @@ extern "C" int cuda_operator_rmsnorm_v3(
       cuda_stream>>>(input, weight, output, rows, cols, eps);
   return static_cast<int>(cudaGetLastError());
 }
+
+extern "C" int cuda_operator_rmsnorm_v4(
+    const float* input,
+    const float* weight,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps,
+    void* stream) {
+  const int validation =
+      validate_rmsnorm_arguments(input, weight, output, rows, cols, eps);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  bool use_float4 = false;
+  if (cols == 512 || cols == 1024) {
+    use_float4 = rows >= 1024;
+  } else if (cols == 4096) {
+    use_float4 = rows <= 1536;
+  } else if (cols == 8192) {
+    use_float4 = rows <= 1024;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  const bool aligned =
+      (reinterpret_cast<std::uintptr_t>(input) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(weight) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(output) % alignof(float4) == 0);
+
+  if (use_float4 && aligned) {
+    const std::uint64_t vec_cols = cols / 4;
+    rmsnorm_v3_float4_row_kernel<<<
+        static_cast<unsigned int>(rows),
+        kRmsNormV3Threads,
+        0,
+        cuda_stream>>>(
+            reinterpret_cast<const float4*>(input),
+            reinterpret_cast<const float4*>(weight),
+            reinterpret_cast<float4*>(output),
+            rows,
+            vec_cols,
+            cols,
+            eps);
+    return static_cast<int>(cudaGetLastError());
+  }
+
+  rmsnorm_v2_warp_row_kernel<<<
+      static_cast<unsigned int>(rows),
+      kRmsNormV2Threads,
+      0,
+      cuda_stream>>>(input, weight, output, rows, cols, eps);
+  return static_cast<int>(cudaGetLastError());
+}
