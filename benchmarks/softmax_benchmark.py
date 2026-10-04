@@ -138,16 +138,27 @@ def main() -> None:
                 else 0.0
             )
 
+            v5_uses_packed = (
+                name == "v5_shape_dispatch"
+                and (
+                    (cols <= 64 and rows >= 4096)
+                    or (64 < cols <= 128 and rows >= 2048)
+                )
+            )
+            v5_uses_v3 = name == "v5_shape_dispatch" and not v5_uses_packed
+            uses_width_aware_threads = (
+                name == "v3_width_aware" or v5_uses_v3
+            )
             threads_per_block = (
                 128
                 if name == "v0_serial_row"
                 else (
                     32
-                    if name == "v3_width_aware" and cols <= 32
+                    if uses_width_aware_threads and cols <= 32
                     else 64
-                    if name == "v3_width_aware" and cols <= 64
+                    if uses_width_aware_threads and cols <= 64
                     else 128
-                    if name == "v3_width_aware" and cols <= 128
+                    if uses_width_aware_threads and cols <= 128
                     else 256
                 )
             )
