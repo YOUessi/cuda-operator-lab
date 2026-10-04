@@ -725,3 +725,55 @@ Neutral or negative examples:
 - 2048 x 1024: V4 regresses to ~0.93x V2.
 
 Conclusion: float4 is a strong memory-path optimization for selected shapes, but should not be enabled universally. Next: V5 profile-guided dispatcher between V2 and V4.
+
+## LayerNorm V5 profile-guided dispatcher
+
+V5 adds no new device kernel. It selects between:
+
+- V2: scalar IO + warp-shuffle two-pass statistics;
+- V4: aligned float4 IO + the same V2 reductions.
+
+The policy is generated from repeated L2-evicted interleaved benchmark CSVs with this acceptance gate:
+
+```text
+minimum independent runs: 2
+minimum speedup in every run: 1.05x
+```
+
+Accepted RTX 4090 Laptop profile:
+
+- 128 x 4096;
+- 256 x 4096;
+- 512 x 4096;
+- 128 x 8192;
+- 256 x 8192;
+- 512 x 8192;
+- 1024 x 512;
+- 1536 x 512;
+- 1536 x 1024.
+
+All other measured and unmeasured shapes fall back to V2.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **484 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors.
+
+Final cold-cache examples:
+
+- 128 x 4096: V2 24.384 us -> V5 17.344 us;
+- 512 x 4096: 51.200 us -> 44.288 us;
+- 128 x 8192: 37.888 us -> 25.904 us;
+- 512 x 8192: 95.232 us -> 82.912 us;
+- 1536 x 1024: 34.032 us -> 31.728 us.
+
+Fallback validation:
+
+- 1024 x 4096: V2 79.968 us, V5 79.872 us;
+- 2048 x 1024: V2 42.304 us, V5 41.920 us;
+- 2048 x 512: V2 24.576 us, V5 24.592 us.
+
+Conclusion: LayerNorm now has a complete optimization path from serial baseline through block parallelism, warp reductions, Welford study, vectorized IO, and evidence-driven dispatch.
