@@ -35,6 +35,7 @@ Ordinary source edits happen on GitHub feature branches. Tang is used only when 
 | V2 | shared-memory block reduction + one atomic/block | 45 passed | 16M cold ≈ 177 us, near PyTorch; V1 plateau disappears | `58baea1` |
 | V3 | warp shuffle for intra-block reduction | 67 passed | +14% at 262K, ~0% at 16M; large input becomes memory dominated | `83e3820` |
 | V4 | aligned `float4` / 128-bit input loads | 89 passed | +4.8% at 16M, but regression at 262K due scalar-based launch geometry | `93355b2` |
+| V5 | vector-work-based grid + empirical shape dispatch | 116 passed | fixes V4 medium-shape overlaunch; 16M cold 167.936 us | PR #5 |
 
 ---
 
@@ -306,35 +307,185 @@ Vectorization helps large memory-dominated input but is not universally benefici
 
 ## E06 — Reduction V5: shape-aware vector launch
 
-Status: **in progress**
+Status: **validated; ready to merge**
 
-### Hypothesis
+### Initial hypothesis
 
-The V4 medium-shape regression is caused by launch geometry being computed from scalar N instead of the actual `float4` work-item count.
+The V4 medium-shape regression was caused by grid geometry being computed from scalar `N` even though the vector kernel has only `N/4` `float4` work items.
 
-### Isolated change
+### Operation 1 — change only vector-path grid sizing
 
-Keep the V4 kernel body unchanged and change only vector-path launch geometry:
+The V4 kernel body was kept unchanged.
 
 ```text
 V4 blocks = ceil(N / 256)
 V5 blocks = ceil((N / 4) / 256)
 ```
 
-with the same 1,024-block cap.
+The 1,024-block cap and V3 fallback were preserved.
 
-Unaligned input and inputs with no complete float4 element continue to use the scalar V3 path.
+### Operation 2 — first hardware validation
 
-### Required validation before merge
+Tang pulled the GitHub branch and performed a clean CUDA 12.8 / SM 8.9 build.
 
-- clean CUDA 12.8 / SM 8.9 build;
-- full regression suite;
-- aligned / unaligned correctness;
-- current-stream and output-reset behavior;
-- Compute Sanitizer;
-- V4 vs V5 hot and L2-evicted benchmarks;
-- stable repeated comparison at the previously regressed 262K shape;
-- record whether vector-work-based blocks actually remove the regression.
+Result:
+
+```text
+build: PASS
+full pytest: 110 passed
+```
+
+### Operation 3 — preliminary V4 vs V5 benchmark
+
+Hot and L2-evicted 50-repeat runs plus a focused 100-repeat cold run were recorded.
+
+The important initial result at 262K:
+
+```text
+L2-evicted:
+V4  8.192 us
+V5  7.392 us
+```
+
+So sizing the grid from vector work fixed the specific V4 overlaunch regression.
+
+Raw artifacts:
+
+- `reports/data/reduction_v4_v5_prethreshold_hot50_rtx4090_laptop.csv`
+- `reports/data/reduction_v4_v5_prethreshold_cold50_rtx4090_laptop.csv`
+- `reports/data/reduction_v4_v5_prethreshold_cold100_rtx4090_laptop.csv`
+
+### Operation 4 — crossover sweep
+
+A wider V3 vs V5 sweep was run before hard-coding a dispatch threshold.
+
+Cold, 20 warmups + 100 repeats:
+
+```text
+16K:  V3 4.160 us   V5 4.096 us
+32K:  V3 4.336 us   V5 4.096 us
+64K:  V3 5.120 us   V5 5.120 us
+128K: V3 6.144 us   V5 6.144 us
+262K: V3 7.408 us   V5 7.168 us
+512K: V3 10.272 us  V5 10.240 us
+1M:   V3 16.384 us  V5 15.392 us
+2M:   V3 28.672 us  V5 25.600 us
+4M:   V3 47.104 us  V5 45.056 us
+8M:   V3 91.136 us  V5 86.576 us
+16M:  V3 176.128 us V5 167.936 us
+```
+
+Hot-cache sweep showed that very small shapes could be neutral or regress depending on run state, while 512K and larger were consistently neutral-to-positive.
+
+Raw artifacts:
+
+- `reports/data/reduction_v3_v5_prethreshold_crossover_hot100_rtx4090_laptop.csv`
+- `reports/data/reduction_v3_v5_prethreshold_crossover_cold100_rtx4090_laptop.csv`
+
+### Operation 5 — empirical dispatch threshold
+
+An initial 32K threshold was tried, then the cross-regime results were reviewed again.
+
+To avoid promoting a cache-state-sensitive small-shape result into the default policy, the final vector threshold was made more conservative:
+
+```text
+N < 524,288
+    -> V3 scalar warp-shuffle path
+
+N >= 524,288 and pointer is 16-byte aligned
+    -> float4 vector path with blocks computed from N/4
+
+unaligned
+    -> V3 scalar fallback
+```
+
+Threshold-boundary correctness tests were added around both the initial and final crossover.
+
+### Operation 6 — final clean regression validation
+
+After the final 512K crossover was committed:
+
+```text
+clean build: PASS
+full pytest: 116 passed
+```
+
+### Operation 7 — final benchmark
+
+Final comparison uses 20 warmups + 100 timed repeats.
+
+L2-evicted:
+
+| N | V3 scalar | V5 dispatch | V3 → V5 | torch.sum |
+|---:|---:|---:|---:|---:|
+| 262,144 | 8.176 us | 7.424 us* | 1.10x* | 11.120 us |
+| 524,288 | 10.256 us | 10.240 us | ~1.00x | 12.288 us |
+| 1,048,576 | 17.008 us | 15.376 us | 1.11x | 17.408 us |
+| 4,194,304 | 47.104 us | 45.152 us | 1.04x | 48.128 us |
+| 16,777,216 | 176.128 us | 167.936 us | 1.05x | 170.896 us |
+
+`*` At 262K the final V5 dispatcher selects the V3 scalar kernel. The timing difference is measurement/run-state noise between two calls to the same underlying kernel, not a different kernel optimization.
+
+Hot-cache:
+
+| N | V3 scalar | V5 dispatch | V3 → V5 |
+|---:|---:|---:|---:|
+| 262,144 | 12.288 us | 12.448 us* | ~0.99x* |
+| 524,288 | 13.312 us | 12.608 us | 1.06x |
+| 1,048,576 | 12.976 us | 13.056 us | ~0.99x |
+| 4,194,304 | 18.080 us | 15.360 us | 1.18x |
+| 16,777,216 | 40.960 us | 33.792 us | 1.21x |
+
+Again, below the crossover V5 is intentionally the scalar V3 path.
+
+Final raw artifacts:
+
+- `reports/data/reduction_v3_v5_final_hot100_rtx4090_laptop.csv`
+- `reports/data/reduction_v3_v5_final_cold100_rtx4090_laptop.csv`
+
+### Operation 8 — final Compute Sanitizer
+
+CUDA 12.8 Compute Sanitizer:
+
+```text
+aligned vector path, N=1,048,576:
+  memcheck:  0 errors
+  racecheck: 0 hazards / 0 errors
+  synccheck: 0 errors
+
+below-crossover scalar path, N=262,144:
+  memcheck: 0 errors
+
+unaligned contiguous fallback:
+  memcheck: 0 errors
+```
+
+Artifact:
+
+- `reports/data/reduction_v5_compute_sanitizer.txt`
+
+### Conclusion
+
+The V4 regression was not caused by `float4` itself; it was caused by applying scalar launch geometry to vector work.
+
+V5 fixes that mismatch and then adds a conservative empirical dispatcher so the vector path is used only where the measured benefit is robust enough to justify it.
+
+The Reduction line now has a complete profile-guided story:
+
+```text
+V0 serial
+ -> V1 parallel
+ -> V2 block reduction
+ -> V3 warp shuffle
+ -> V4 vector loads
+ -> V5 shape-aware dispatch
+```
+
+### Next action
+
+Reduction is now sufficiently deep for the project. The next operator should reuse the same benchmark / correctness / profiling discipline rather than continue adding increasingly marginal Reduction-only optimizations.
+
+Next target: **row-wise Softmax baseline and optimization ladder**.
 
 ---
 
