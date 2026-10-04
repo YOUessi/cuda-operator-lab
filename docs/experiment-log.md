@@ -1135,7 +1135,7 @@ This isolates launch/work efficiency before adding vectorized loads or changing 
 
 ## E10 — Softmax V3: width-aware block sizing
 
-Status: **in progress**
+Status: **validated; experimental result**
 
 ### Hypothesis
 
@@ -1211,3 +1211,126 @@ Dispatch policy:
 The dynamic reduction helpers compute `warp_count = blockDim.x / 32` so only launched warps contribute to the first-warp final reduction.
 
 V2 remains unchanged and fixed at 256 threads/block for direct A/B comparison.
+
+
+### Operation 3 — clean Tang hardware regression
+
+Tang fetched the GitHub branch and rebuilt from scratch.
+
+```text
+CUDA 12.8 / sm_89 build: PASS
+full repository pytest: 209 passed
+```
+
+### Operation 4 — sanitizer validation across two dispatch regimes
+
+Narrow dispatch representative:
+
+```text
+shape: 17 x 65
+threads/block: 128
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors
+synccheck: 0 errors
+max_abs <= 1.49e-8
+max_row_sum_error <= 1.79e-7
+```
+
+Wide dispatch representative:
+
+```text
+shape: 17 x 513
+threads/block: 256
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors
+synccheck: 0 errors
+max_abs <= 5.59e-9
+max_row_sum_error <= 1.19e-7
+```
+
+Artifact:
+
+- `reports/data/softmax_v3_compute_sanitizer.txt`
+
+### Operation 5 — ptxas resource capture
+
+V2 and V3 compile to the same static resource footprint:
+
+```text
+registers/thread: 23
+shared memory/block: 32 B
+spills: 0
+barrier resource: used
+```
+
+Artifact:
+
+- `reports/data/softmax_v3_ptxas_sm89.txt`
+
+### Operation 6 — dispatch-boundary sweep
+
+10 warmups + 50 timed repeats, 1024 rows.
+
+Selected results:
+
+| Width | V2 threads | V2 | V3 threads | V3 | Result |
+|---:|---:|---:|---:|---:|---|
+| 31 | 256 | 10.240 us | 32 | 10.256 us | neutral |
+| 33 | 256 | 10.944 us | 64 | 10.480 us | V3 +4.4% |
+| 63 | 256 | 11.200 us | 64 | 10.448 us | V3 +7.2% |
+| 64 | 256 | 11.008 us | 64 | 10.608 us | V3 +3.8% |
+| 127 | 256 | 11.008 us | 128 | 10.464 us | V3 +5.2% |
+| 128 | 256 | 10.240 us | 128 | 10.208 us | neutral |
+| 129 | 256 | 10.448 us | 256 | 10.496 us | same kernel / noise |
+
+Artifact:
+
+- `reports/data/softmax_v2_v3_boundaries_50_rtx4090_laptop.csv`
+
+### Operation 7 — stable 100-repeat comparison
+
+20 warmups + 100 timed repeats.
+
+| Shape | V2 | V3 | V2 -> V3 | PyTorch |
+|---:|---:|---:|---:|---:|
+| 128 x 32 | **10.240 us** | 10.864 us | 0.94x | 8.192 us |
+| 128 x 64 | 10.240 us | 10.240 us | 1.00x | 8.192 us |
+| 128 x 128 | 10.240 us | 10.240 us | 1.00x | 8.192 us |
+| 1024 x 32 | 10.240 us | 10.240 us | 1.00x | 7.920 us |
+| 1024 x 64 | **10.240 us** | 10.992 us | 0.93x | 8.048 us |
+| 1024 x 128 | 10.464 us | **10.272 us** | 1.02x | 8.192 us |
+
+For widths above 128 the V3 dispatcher intentionally uses 256 threads, so V2/V3 differences there are timing noise between equivalent launch geometry.
+
+Artifact:
+
+- `reports/data/softmax_v2_v3_100_rtx4090_laptop.csv`
+
+### Interpretation
+
+The simple hypothesis “fewer inactive threads must be faster” is **not supported as a robust default policy**.
+
+Boundary sweeps show some local wins, but the stable run also shows regressions:
+
+- 128 x 32: ~6% slower;
+- 1024 x 64: ~7% slower;
+- 1024 x 128: only ~2% faster.
+
+Shrinking the block reduces unused column workers, but it also reduces warps per block. With one block assigned to one row, that can reduce useful warp-level parallelism and make scheduler / resident-block limits matter. The experiment therefore exposes a structural problem in one-block-per-row dispatch rather than a simple thread-count tuning problem.
+
+### Decision
+
+Keep V3 as an explicit, validated **negative/shape-sensitive experiment**, but do not treat it as the preferred Softmax path.
+
+### Next action
+
+Softmax V4 should keep a full 256-thread block but assign **one warp per small row**, packing up to 8 rows into one block:
+
+```text
+256-thread block
+  -> 8 warps
+  -> each warp owns one row
+  -> no cross-warp reduction for that row
+```
+
+For small widths this preserves 8 useful warps per block instead of shrinking the block to 1–4 warps. Wider rows will fall back to the validated V2 one-block-per-row path.
