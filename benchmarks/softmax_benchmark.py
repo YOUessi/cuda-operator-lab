@@ -15,6 +15,7 @@ from cuda_operator_lab.bindings import (
     softmax_v0_into,
     softmax_v1_into,
     softmax_v2_into,
+    softmax_v3_into,
 )
 from cuda_operator_lab.references import row_softmax
 
@@ -37,6 +38,7 @@ VARIANTS: dict[str, SoftmaxFn] = {
     "v0_serial_row": softmax_v0_into,
     "v1_block_shared": softmax_v1_into,
     "v2_warp_shuffle": softmax_v2_into,
+    "v3_width_dispatch": softmax_v3_into,
 }
 
 
