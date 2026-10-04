@@ -1,0 +1,21 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN43_GLOBAL__N__3fdd1083_10_rmsnorm_cu_e4a7170228rmsnorm_v3_float4_row_kernelEPK6float4S2_PS0_mmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN43_GLOBAL__N__3fdd1083_10_rmsnorm_cu_e4a7170228rmsnorm_v3_float4_row_kernelEPK6float4S2_PS0_mmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 1 barriers, 32 bytes smem, 404 bytes cmem[0]
+ptxas info    : Compile time = 7.827 ms
+ptxas info    : Compiling entry function '_ZN43_GLOBAL__N__3fdd1083_10_rmsnorm_cu_e4a7170226rmsnorm_v2_warp_row_kernelEPKfS1_Pfmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN43_GLOBAL__N__3fdd1083_10_rmsnorm_cu_e4a7170226rmsnorm_v2_warp_row_kernelEPKfS1_Pfmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem, 396 bytes cmem[0]
+ptxas info    : Compile time = 7.224 ms
+ptxas info    : Compiling entry function '_ZN43_GLOBAL__N__3fdd1083_10_rmsnorm_cu_e4a7170227rmsnorm_v1_block_row_kernelEPKfS1_Pfmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN43_GLOBAL__N__3fdd1083_10_rmsnorm_cu_e4a7170227rmsnorm_v1_block_row_kernelEPKfS1_Pfmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 1 barriers, 1024 bytes smem, 396 bytes cmem[0]
+ptxas info    : Compile time = 4.942 ms
+ptxas info    : Compiling entry function '_ZN43_GLOBAL__N__3fdd1083_10_rmsnorm_cu_e4a7170228rmsnorm_v0_serial_row_kernelEPKfS1_Pfmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN43_GLOBAL__N__3fdd1083_10_rmsnorm_cu_e4a7170228rmsnorm_v0_serial_row_kernelEPKfS1_Pfmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 20 registers, used 0 barriers, 396 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compile time = 6.602 ms
