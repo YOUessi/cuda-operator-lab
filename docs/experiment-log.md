@@ -2536,3 +2536,66 @@ Next validation gate:
 - benchmark versus PyTorch LayerNorm;
 - ptxas resource capture;
 - Compute Sanitizer memcheck/racecheck/synccheck.
+
+### E18 Operation 2 — Tang hardware validation
+
+Tang fetched the GitHub branch and rebuilt from scratch.
+
+```text
+CUDA 12.8 / sm_89 build: PASS
+full repository pytest: 373 passed
+```
+
+### Operation 3 — baseline benchmark
+
+Protocol:
+
+- 20 warmups;
+- 100 timed repeats;
+- CUDA events;
+- PyTorch `torch.nn.functional.layer_norm` reference.
+
+Selected results:
+
+| Shape | V0 serial row | PyTorch | Slowdown |
+|---:|---:|---:|---:|
+| 128 x 128 | 51.376 us | 10.496 us | 4.89x |
+| 128 x 512 | 185.344 us | 10.464 us | 17.71x |
+| 128 x 1024 | 356.096 us | 10.592 us | 33.62x |
+| 128 x 4096 | 1317.088 us | 11.264 us | 116.93x |
+| 1024 x 4096 | 1086.416 us | 24.576 us | 44.21x |
+| 128 x 8192 | 2161.056 us | 15.360 us | 140.69x |
+
+Artifact:
+
+- `reports/data/layernorm_v0_rtx4090.csv`
+
+### Operation 4 — ptxas
+
+```text
+registers/thread: 24
+shared memory/block: 0 B
+spills: 0
+barriers: 0
+```
+
+Artifact:
+
+- `reports/data/layernorm_v0_ptxas_sm89.txt`
+
+### Operation 5 — Compute Sanitizer
+
+Representative shape: `17 x 4097`.
+
+```text
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+max_abs_error: 1.14e-5
+```
+
+### V0 conclusion
+
+The baseline intentionally exposes the cost of three serial row passes. The next isolated experiment is V1: one block per row with shared-memory reductions for mean and variance, followed by parallel affine output.
+
+Status: **validated; ready to merge**.
