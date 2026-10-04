@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import fused_residual_layernorm_v0_into, fused_residual_layernorm_v1_into, fused_residual_layernorm_v2_into
+from cuda_operator_lab.bindings import fused_residual_layernorm_v0_into, fused_residual_layernorm_v1_into, fused_residual_layernorm_v2_into, fused_residual_layernorm_v3_into
 from cuda_operator_lab.references import fused_residual_layernorm
 
 
@@ -73,6 +73,7 @@ def main() -> None:
             ("v0_serial_fused", fused_residual_layernorm_v0_into),
             ("v1_block_shared", fused_residual_layernorm_v1_into),
             ("v2_warp_shuffle", fused_residual_layernorm_v2_into),
+            ("v3_float4_io", fused_residual_layernorm_v3_into),
         ]
         unfused_times = measure_us(
             lambda: fused_residual_layernorm(

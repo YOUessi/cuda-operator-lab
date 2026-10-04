@@ -871,3 +871,45 @@ End-to-end versus unfused PyTorch:
 - 128 x 8192: 24.576 us vs 19.312 us.
 
 Conclusion: reduction overhead is largely removed. The next target is the memory path, especially on wide rows that repeatedly load input + residual and then weight + bias.
+
+## Fused Residual + LayerNorm V3 aligned float4 IO
+
+V3 keeps V2 warp-shuffle reductions and vectorizes the fused memory path:
+
+- aligned float4 input loads;
+- aligned float4 residual loads;
+- aligned float4 weight/bias loads;
+- float4 output stores;
+- V2 fallback for unaligned tensors or cols % 4 != 0.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **563 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 28 registers/thread, 32 B shared memory/block, 0 spills.
+
+Warm-cache representative fused V3 versus unfused PyTorch:
+
+- 128 x 4096: 12.448 us vs 16.192 us;
+- 128 x 8192: 17.680 us vs 19.536 us;
+- 1024 x 512: 13.008 us vs 14.272 us;
+- 1024 x 128: 12.192 us vs 14.336 us.
+
+Cold-cache interleaved profiling across two independent seeds shows stable V2 -> V3 gains on selected shapes:
+
+- 128 x 4096: 1.250x / 1.254x;
+- 128 x 8192: 1.409x / 1.400x;
+- 256 x 4096: 1.160x / 1.149x;
+- 256 x 8192: 1.153x / 1.165x;
+- 512 x 4096: 1.094x / 1.091x;
+- 512 x 8192: 1.062x / 1.059x;
+- 1024 x 1024: 1.098x / 1.098x;
+- 1024 x 4096: 1.075x / 1.073x;
+- 1536 x 512: 1.069x / 1.053x.
+
+Other shapes are neutral or fail the 5% acceptance gate.
+
+Conclusion: V3 is a strong fused fast path, but still shape-dependent. Final step: profile-guided V4 dispatcher between V2 and V3.

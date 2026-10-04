@@ -3222,3 +3222,90 @@ Representative timings:
 Warp shuffle helps high-row-count workloads and makes the fused path competitive or faster on narrow/medium widths. Remaining wide-row headroom is now primarily a memory-path problem.
 
 Next action: V3 aligned float4 fused IO.
+
+## E27 — Fused Residual + LayerNorm V3: aligned float4 IO
+
+Status: **validated fast path; shape-dependent**
+
+### Design
+
+V3 preserves the V2 statistics/reduction algorithm and changes only aligned memory traffic.
+
+Fast path requires:
+
+```text
+cols % 4 == 0
+input/residual/weight/bias/output 16-byte aligned
+```
+
+Otherwise V3 falls back to V2.
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 563 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+ptxas: 28 registers/thread, 32 B shared memory, 0 spills
+```
+
+### Warm-cache end-to-end result
+
+| Shape | V3 fused | PyTorch unfused |
+|---:|---:|---:|
+| 128 x 4096 | 12.448 us | 16.192 us |
+| 128 x 8192 | 17.680 us | 19.536 us |
+| 1024 x 512 | 13.008 us | 14.272 us |
+| 1024 x 128 | 12.192 us | 14.336 us |
+| 1024 x 4096 | 44.032 us | 39.936 us |
+
+### Stable cold-cache profiling
+
+Added:
+
+`benchmarks/fused_residual_layernorm_stable_profile.py`
+
+Method:
+
+1. touch a 64 MiB CUDA buffer before every timed launch;
+2. interleave direct V2 and V3 samples;
+3. alternate/randomize order;
+4. 7 independent rounds x 80 launches;
+5. repeat with two independent seeds.
+
+Two-seed V2/V3 speedups:
+
+```text
+128 x 4096: 1.250x / 1.254x
+128 x 8192: 1.409x / 1.400x
+256 x 4096: 1.160x / 1.149x
+256 x 8192: 1.153x / 1.165x
+512 x 4096: 1.094x / 1.091x
+512 x 8192: 1.062x / 1.059x
+1024 x 1024: 1.098x / 1.098x
+1024 x 4096: 1.075x / 1.073x
+1536 x 512: 1.069x / 1.053x
+```
+
+Rejected examples:
+
+```text
+128 x 1024: 1.030x / 1.047x
+1024 x 512: 1.029x / 1.013x
+1536 x 1024: ~1.00x
+2048 x 4096: ~1.04x
+2048 x 512: regression
+```
+
+### Decision
+
+V3 is a real fused fast path. Final default should be a profile-guided dispatcher using repeated cold-cache evidence.
+
+Artifacts:
+
+- `reports/data/fused_residual_layernorm_v0_v1_v2_v3_rtx4090.csv`
+- `reports/data/fused_residual_layernorm_v3_ptxas_sm89.txt`
+- `reports/data/fused_residual_layernorm_stable_seed1_rtx4090.csv`
+- `reports/data/fused_residual_layernorm_stable_seed2_rtx4090.csv`

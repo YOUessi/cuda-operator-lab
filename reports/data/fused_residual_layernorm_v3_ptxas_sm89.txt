@@ -1,0 +1,21 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e45fused_residual_layernorm_v3_float4_row_kernelEPK6float4S2_S2_S2_PS0_mmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e45fused_residual_layernorm_v3_float4_row_kernelEPK6float4S2_S2_S2_PS0_mmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 28 registers, used 1 barriers, 32 bytes smem, 420 bytes cmem[0]
+ptxas info    : Compile time = 11.050 ms
+ptxas info    : Compiling entry function '_ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e43fused_residual_layernorm_v2_warp_row_kernelEPKfS1_S1_S1_Pfmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e43fused_residual_layernorm_v2_warp_row_kernelEPKfS1_S1_S1_Pfmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 23 registers, used 1 barriers, 32 bytes smem, 412 bytes cmem[0]
+ptxas info    : Compile time = 10.030 ms
+ptxas info    : Compiling entry function '_ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e44fused_residual_layernorm_v1_block_row_kernelEPKfS1_S1_S1_Pfmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e44fused_residual_layernorm_v1_block_row_kernelEPKfS1_S1_S1_Pfmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 21 registers, used 1 barriers, 1024 bytes smem, 412 bytes cmem[0]
+ptxas info    : Compile time = 6.508 ms
+ptxas info    : Compiling entry function '_ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e45fused_residual_layernorm_v0_serial_row_kernelEPKfS1_S1_S1_Pfmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN60_GLOBAL__N__04f603f9_27_fused_residual_layernorm_cu_3b52956e45fused_residual_layernorm_v0_serial_row_kernelEPKfS1_S1_S1_Pfmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, used 0 barriers, 412 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compile time = 9.175 ms
