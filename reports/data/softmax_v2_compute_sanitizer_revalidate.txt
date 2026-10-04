@@ -1,0 +1,17 @@
+Compute Sanitizer 2025.1.0.0 (CUDA 12.8 package)
+Representative shape: [17, 513], float32
+
+memcheck:
+  max_abs_error: 3.725290298461914e-09
+  max_row_sum_error: 1.1920928955078125e-07
+  ERROR SUMMARY: 0 errors
+
+racecheck:
+  max_abs_error: 3.725290298461914e-09
+  max_row_sum_error: 1.1920928955078125e-07
+  RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+synccheck:
+  max_abs_error: 3.725290298461914e-09
+  max_row_sum_error: 1.1920928955078125e-07
+  ERROR SUMMARY: 0 errors
