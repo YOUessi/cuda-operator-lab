@@ -1,0 +1,18 @@
+CUDA 12.8 Compute Sanitizer 2025.1.0.0
+
+Representative RMSNorm V0 input:
+  shape: [17, 4097]
+  dtype: float32
+  eps: 1e-5
+
+memcheck:
+  max_abs_error: 7.152557373046875e-06
+  ERROR SUMMARY: 0 errors
+
+racecheck:
+  max_abs_error: 7.152557373046875e-06
+  RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+synccheck:
+  max_abs_error: 7.152557373046875e-06
+  ERROR SUMMARY: 0 errors
