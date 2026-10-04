@@ -871,3 +871,45 @@ State what the data supports. Do not promote a shape-specific win into a univers
 ### Next action
 
 Derive the next change from the measured bottleneck, not from a predetermined optimization checklist.
+
+
+---
+
+## E09 — Softmax V2: warp-shuffle block reductions
+
+Status: **in progress**
+
+### Hypothesis
+
+Softmax V1 removed the serial-width bottleneck, but every row still performs two complete 256-thread shared-memory trees:
+
+1. max reduction;
+2. denominator-sum reduction.
+
+Each tree uses repeated `__syncthreads()` stages and 1,024 B shared memory per block.
+
+If the row traversal and one-block-per-row launch policy are held constant, replacing only those two trees with two-level warp-shuffle reductions should isolate the cost of block-level reduction coordination.
+
+### Operation 1 — experiment branch and scope lock
+
+Created branch:
+
+```text
+feat/softmax-v2-warp-reduce
+```
+
+Scope is intentionally limited to:
+
+- keep 256 threads per row;
+- keep the same three Softmax passes;
+- keep block-stride column traversal;
+- replace max/sum reduction machinery only;
+- do not add float4, shape dispatch, or change block size in this experiment.
+
+Planned hardware validation:
+
+- clean CUDA 12.8 / SM 8.9 build;
+- full repository pytest;
+- Compute Sanitizer memcheck / racecheck / synccheck;
+- ptxas resource capture;
+- V1 vs V2 benchmark on the same Softmax shape matrix.
