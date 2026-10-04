@@ -2738,3 +2738,91 @@ Warp shuffle materially helps high-row-count workloads and nearly closes the gap
 ### Next action
 
 LayerNorm V3 should test Welford online statistics so mean and variance can be accumulated together in one numerically stable pass before considering float4/vectorized IO.
+
+## E21 — LayerNorm V3: Welford online statistics
+
+Status: **validated experimental result; not promoted as the fastest path**
+
+### Hypothesis
+
+V2 reads each row once for mean and again for variance. Welford can accumulate `count / mean / M2` in one statistically stable pass, potentially reducing one full input traversal and one reduction phase.
+
+### First implementation
+
+A float32 Welford state was implemented per thread and merged across lanes/warps using the standard parallel combine formula.
+
+Ordinary correctness passed, but a dedicated large-offset stability test:
+
+```text
+x = 1000 + N(0, 0.1)
+shape = 64 x 4096
+```
+
+showed that using PyTorch float32 output as the exact truth was itself an unsuitable stability criterion.
+
+### Reference correction
+
+The stability test was changed to use a float64 LayerNorm computation as the numerical truth.
+
+Against that truth:
+
+| Variant | max abs | mean abs | p99 abs |
+|---|---:|---:|---:|
+| PyTorch float32 | 2.390e-3 | 2.017e-4 | 1.076e-3 |
+| V2 two-pass float32 | 2.543e-3 | 2.130e-4 | 1.147e-3 |
+| V3 float Welford | 2.349e-3 | 1.980e-4 | 1.063e-3 |
+| double-Welford experiment | 1.011e-3 | 1.214e-4 | 5.612e-4 |
+
+The double version was measurably more accurate, confirming the numerical direction.
+
+### Double-Welford negative experiment
+
+Changing Welford state to double precision increased resources to:
+
+```text
+48 registers/thread
+160 B shared memory/block
+0 spills
+```
+
+and caused severe regressions:
+
+```text
+128 x 4096: 14.240 us -> 54.272 us
+1024 x 4096: 31.744 us -> 318.320 us
+128 x 8192: 19.456 us -> 83.792 us
+```
+
+Therefore the double path was rejected.
+
+### Final float32 Welford validation
+
+```text
+full pytest: 443 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+ptxas: 30 registers/thread, 96 B shared memory, 0 spills
+```
+
+Selected V2 vs V3 float Welford:
+
+| Shape | V2 | V3 |
+|---:|---:|---:|
+| 128 x 512 | 11.264 us | 11.264 us |
+| 128 x 4096 | 14.336 us | 14.336 us |
+| 1024 x 512 | 12.768 us | 14.336 us |
+| 1024 x 4096 | 31.744 us | 31.552 us |
+| 128 x 8192 | 19.456 us | 19.744 us |
+
+Artifacts:
+
+- `reports/data/layernorm_v0_v1_v2_v3_float_rtx4090.csv`
+- `reports/data/layernorm_v3_float_ptxas_sm89.txt`
+- `reports/data/layernorm_v3_numeric_stability.csv`
+
+### Decision
+
+Keep float32 Welford as a valid algorithmic/numerical experiment, but do not treat it as the default fastest LayerNorm implementation.
+
+Next performance experiment: preserve V2 two-pass warp-shuffle statistics and vectorize aligned input/weight/bias/output traffic with `float4`.
