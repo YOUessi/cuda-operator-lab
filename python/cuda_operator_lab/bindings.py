@@ -64,6 +64,17 @@ class _Library:
             ]
             function.restype = ctypes.c_int
 
+        self.handle.cuda_operator_rmsnorm_v0.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_float,
+            ctypes.c_void_p,
+        ]
+        self.handle.cuda_operator_rmsnorm_v0.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -298,3 +309,72 @@ def softmax_v5(x: torch.Tensor) -> torch.Tensor:
     """Return row-wise Softmax V5 output."""
     out = torch.empty_like(x)
     return softmax_v5_into(x, out)
+
+
+def _validate_rmsnorm_input(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float,
+) -> None:
+    if not x.is_cuda or not weight.is_cuda:
+        raise ValueError("rmsnorm input and weight must be CUDA tensors")
+    if x.ndim != 2:
+        raise ValueError("rmsnorm input must be 2-D [rows, cols]")
+    if weight.ndim != 1 or weight.shape[0] != x.shape[1]:
+        raise ValueError("rmsnorm weight must be 1-D with length equal to cols")
+    if x.dtype != torch.float32 or weight.dtype != torch.float32:
+        raise TypeError("rmsnorm currently supports float32 only")
+    if not x.is_contiguous() or not weight.is_contiguous():
+        raise ValueError("rmsnorm input and weight must be contiguous")
+    if x.shape[1] == 0:
+        raise ValueError("rmsnorm requires cols > 0")
+    if eps <= 0:
+        raise ValueError("rmsnorm eps must be positive")
+
+
+def _validate_rmsnorm_output(x: torch.Tensor, out: torch.Tensor) -> None:
+    if not out.is_cuda or out.device != x.device:
+        raise ValueError("rmsnorm output must be a CUDA tensor on the same device")
+    if out.dtype != torch.float32 or out.shape != x.shape or not out.is_contiguous():
+        raise ValueError(
+            "rmsnorm output must be contiguous float32 with the same shape"
+        )
+
+
+def rmsnorm_v0_into(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    out: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Launch V0: one CUDA thread serially computes one RMSNorm row."""
+    _validate_rmsnorm_input(x, weight, eps)
+    _validate_rmsnorm_output(x, out)
+
+    rows, cols = x.shape
+    if rows == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_rmsnorm_v0(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(weight.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(rows),
+        ctypes.c_uint64(cols),
+        ctypes.c_float(eps),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def rmsnorm_v0(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Return row-wise RMSNorm V0 output."""
+    out = torch.empty_like(x)
+    return rmsnorm_v0_into(x, weight, out, eps)
