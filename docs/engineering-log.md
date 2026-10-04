@@ -788,3 +788,24 @@ y = LayerNorm(z)
 ```
 
 V0 intentionally keeps one CUDA thread per row and serial mean/variance/affine passes. The only architectural change versus an unfused graph is eliminating the materialized intermediate residual-add tensor.
+
+### Fused Residual + LayerNorm V0 validation
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **499 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 26 registers/thread, 0 B shared memory, 0 spills.
+
+Representative latency versus unfused PyTorch `x + residual` followed by `layer_norm`:
+
+- 128 x 512: 331.616 us vs 13.120 us;
+- 128 x 1024: 580.608 us vs 13.264 us;
+- 128 x 4096: 1874.432 us vs 14.336 us;
+- 128 x 8192: 3895.296 us vs 19.136 us;
+- 1024 x 4096: 1882.112 us vs 40.944 us.
+
+Conclusion: eliminating the intermediate tensor is insufficient when the fused kernel remains serial within each row. The next experiment must combine fusion with intra-row block parallelism.
