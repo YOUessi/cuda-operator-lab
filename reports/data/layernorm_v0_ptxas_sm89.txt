@@ -1,0 +1,6 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN45_GLOBAL__N__1164651a_12_layernorm_cu_220e998d30layernorm_v0_serial_row_kernelEPKfS1_S1_Pfmmf' for 'sm_89'
+ptxas info    : Function properties for _ZN45_GLOBAL__N__1164651a_12_layernorm_cu_220e998d30layernorm_v0_serial_row_kernelEPKfS1_S1_Pfmmf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 24 registers, used 0 barriers, 404 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compile time = 10.473 ms
