@@ -36,6 +36,14 @@ __device__ __forceinline__ float block_reduce_max_width(
   const int warp_id = threadIdx.x / kWarpSize;
 
   value = warp_reduce_max(value);
+
+  if constexpr (kBlockWarps == 1) {
+    // A one-warp block needs no shared-memory handoff. Broadcasting lane 0's
+    // final register value also avoids a read/write race on warp_partials[0]
+    // under independent thread scheduling.
+    return __shfl_sync(kFullWarpMask, value, 0);
+  }
+
   if (lane == 0) {
     warp_partials[warp_id] = value;
   }
@@ -68,6 +76,11 @@ __device__ __forceinline__ float block_reduce_sum_width(
   const int warp_id = threadIdx.x / kWarpSize;
 
   value = warp_reduce_sum(value);
+
+  if constexpr (kBlockWarps == 1) {
+    return __shfl_sync(kFullWarpMask, value, 0);
+  }
+
   if (lane == 0) {
     warp_partials[warp_id] = value;
   }
