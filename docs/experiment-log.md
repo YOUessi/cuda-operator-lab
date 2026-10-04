@@ -3052,3 +3052,33 @@ V0 serial row
 ```
 
 The central result is not a single "best kernel" but a measured optimization process: each change is isolated, validated, profiled under cache-aware methodology, and promoted only when repeated evidence supports it.
+
+## E24 — Fused Residual + LayerNorm V0
+
+Status: **implementation complete; awaiting Tang validation**
+
+Scope:
+
+- float32;
+- contiguous x/residual [rows, cols];
+- contiguous weight/bias [cols];
+- one thread per row;
+- residual addition recomputed inside mean, variance, and affine passes;
+- no intermediate residual-add tensor;
+- active PyTorch CUDA stream.
+
+Reference comparison:
+
+```python
+torch.nn.functional.layer_norm(
+    x + residual,
+    ...
+)
+```
+
+Next validation:
+- clean CUDA build;
+- full pytest;
+- benchmark against unfused PyTorch add + LayerNorm;
+- ptxas;
+- Compute Sanitizer.
