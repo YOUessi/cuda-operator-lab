@@ -1129,3 +1129,75 @@ otherwise    -> 256 threads
 ```
 
 This isolates launch/work efficiency before adding vectorized loads or changing the three-pass Softmax algorithm.
+
+
+### Operation 9 — reconnect revalidation on Tang
+
+Tang returned online and the current branch was fetched again before validation.
+
+Clean execution:
+
+```text
+CUDA 12.8 / sm_89 clean build: PASS
+full repository pytest: 180 passed
+```
+
+No local source edits were made.
+
+Compute Sanitizer, shape `[17, 513]`:
+
+```text
+memcheck:  0 errors
+racecheck: 0 hazards / 0 errors
+synccheck: 0 errors
+max_abs_error:     3.725290298461914e-09
+max_row_sum_error: 1.1920928955078125e-07
+```
+
+ptxas reconfirmed:
+
+```text
+V1:
+  21 registers/thread
+  1024 B shared/block
+  0 spills
+
+V2:
+  23 registers/thread
+  32 B shared/block
+  0 spills
+```
+
+A fresh 10-warmup / 50-repeat full shape matrix was recorded. Representative rows:
+
+| Shape | V1 | V2 | PyTorch |
+|---:|---:|---:|---:|
+| 128 x 128 | 10.240 us | 9.728 us | 8.192 us |
+| 128 x 4096 | 13.312 us | 12.576 us | 9.216 us |
+| 1024 x 128 | 14.336 us | 10.240 us | 7.376 us |
+| 1024 x 512 | 16.256 us | 12.272 us | 7.936 us |
+| 1024 x 4096 | 41.776 us | 38.912 us | 36.864 us |
+
+A second focused 20-warmup / 100-repeat run reconfirmed the high-row-count gains:
+
+| Shape | V1 | V2 | V1 -> V2 | PyTorch |
+|---:|---:|---:|---:|---:|
+| 128 x 4096 | 13.312 us | 13.264 us | ~1.00x | 9.216 us |
+| 1024 x 128 | 14.336 us | 10.512 us | **1.36x** | 8.064 us |
+| 1024 x 512 | 16.288 us | 12.288 us | **1.33x** | 8.192 us |
+| 1024 x 4096 | 41.984 us | 38.912 us | **1.08x** | 36.864 us |
+
+The reconnect revalidation supports the same conclusion as the earlier V2 run: warp-shuffle reductions are most useful when many row blocks are active, while the benefit at 128 rows is small and shape-dependent.
+
+Fresh artifacts:
+
+- `reports/data/softmax_v1_v2_revalidate50_rtx4090_laptop.csv`
+- `reports/data/softmax_v1_v2_focus100_revalidate_rtx4090_laptop.csv`
+- `reports/data/softmax_v2_ptxas_revalidate_sm89.txt`
+- `reports/data/softmax_v2_compute_sanitizer_revalidate.txt`
+
+### V2 merge decision
+
+V2 now has two independent hardware-validation rounds with consistent qualitative conclusions, clean sanitizer results, and full regression coverage. It is ready to merge.
+
+Next experiment remains Softmax V3: width-aware thread-count dispatch.
