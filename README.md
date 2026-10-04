@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Softmax V5
+## Current milestone: RMSNorm V0
 
 Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
 
@@ -260,3 +260,33 @@ Representative final results:
 The thresholds come from a dedicated row-count crossover sweep; the complete history, including the benchmark-metadata fix discovered during validation, is retained in `docs/experiment-log.md`.
 
 Next operator: **RMSNorm**.
+
+
+### RMSNorm V0 baseline
+
+The third operator now has a validated serial-row baseline:
+
+```text
+one CUDA thread per row
+  -> sum(x^2)
+  -> rsqrt(mean + eps)
+  -> x * inverse_rms * weight
+```
+
+RTX 4090 Laptop validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full repository suite: **268 passed**;
+- Compute Sanitizer memcheck / racecheck / synccheck: clean;
+- ptxas: 20 registers/thread, 0 spills.
+
+Representative timings:
+
+| Shape | V0 | PyTorch reference |
+|---:|---:|---:|
+| 128 x 128 | 40.960 us | 24.576 us |
+| 128 x 1024 | 270.336 us | 24.576 us |
+| 128 x 4096 | 1,035.216 us | 27.648 us |
+| 128 x 8192 | 1,691.936 us | 26.624 us |
+
+The hidden-width bottleneck is intentionally exposed. Next: block-parallel RMSNorm V1.

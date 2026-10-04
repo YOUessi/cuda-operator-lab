@@ -366,3 +366,33 @@ Final representative timings:
 A benchmark-reporting bug was caught during validation: V5 fallback calls were executing the correct V3 kernels but reporting 256 threads/block in CSV metadata. The reporting logic was fixed and the final benchmark was regenerated.
 
 Decision: stop deepening Softmax after V5 and move to RMSNorm.
+
+
+## RMSNorm V0 serial-row baseline
+
+RMSNorm V0 starts the third operator case study after Reduction and Softmax.
+
+Design:
+
+- one CUDA thread owns one row;
+- serial sum of squares;
+- `rsqrt(mean_square + eps)`;
+- serial normalize and multiply by the learned weight vector.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full repository suite: **268 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors;
+- ptxas: 20 registers/thread, 0 B shared memory, 0 spills.
+
+Performance exposes a serial hidden-width bottleneck:
+
+- 128 x 128: 40.960 us;
+- 128 x 1024: 270.336 us;
+- 128 x 4096: 1,035.216 us;
+- 128 x 8192: 1,691.936 us.
+
+Next: one-block-per-row cooperative sum-of-squares reduction.
