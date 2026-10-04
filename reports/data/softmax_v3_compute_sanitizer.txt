@@ -1,0 +1,19 @@
+Softmax V3 final Compute Sanitizer validation
+CUDA 12.8 / SM 8.9
+Shapes exercised across all dispatch buckets:
+  [17,31], [17,65], [17,127], [17,129], [17,513]
+
+memcheck:
+  ERROR SUMMARY: 0 errors
+
+racecheck:
+  RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+synccheck:
+  ERROR SUMMARY: 0 errors
+
+Observed max_abs_error range:
+  3.725290298461914e-09 .. 2.2351741790771484e-08
+
+Observed max_row_sum_error:
+  <= 2.384185791015625e-07
