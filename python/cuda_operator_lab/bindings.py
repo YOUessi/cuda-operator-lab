@@ -109,6 +109,7 @@ class _Library:
             "cuda_operator_fused_residual_layernorm_v1",
             "cuda_operator_fused_residual_layernorm_v2",
             "cuda_operator_fused_residual_layernorm_v3",
+            "cuda_operator_fused_residual_layernorm_v4",
         ):
             function = getattr(self.handle, name)
             function.argtypes = [
@@ -1057,3 +1058,46 @@ def fused_residual_layernorm_v3(
 ) -> torch.Tensor:
     out = torch.empty_like(x)
     return fused_residual_layernorm_v3_into(x, residual, weight, bias, out, eps)
+
+
+def fused_residual_layernorm_v4_into(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    out: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    _validate_fused_residual_layernorm_input(x, residual, weight, bias, eps)
+    _validate_layernorm_output(x, out)
+
+    rows, cols = x.shape
+    if rows == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_fused_residual_layernorm_v4(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(residual.data_ptr()),
+        ctypes.c_void_p(weight.data_ptr()),
+        ctypes.c_void_p(bias.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(rows),
+        ctypes.c_uint64(cols),
+        ctypes.c_float(eps),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def fused_residual_layernorm_v4(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    out = torch.empty_like(x)
+    return fused_residual_layernorm_v4_into(x, residual, weight, bias, out, eps)
