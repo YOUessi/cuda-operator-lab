@@ -52,6 +52,7 @@ class _Library:
             "cuda_operator_softmax_v2",
             "cuda_operator_softmax_v3",
             "cuda_operator_softmax_v4",
+            "cuda_operator_softmax_v5",
         ):
             function = getattr(self.handle, name)
             function.argtypes = [
@@ -286,3 +287,14 @@ def softmax_v4(x: torch.Tensor) -> torch.Tensor:
     """Return row-wise Softmax V4 output."""
     out = torch.empty_like(x)
     return softmax_v4_into(x, out)
+
+
+def softmax_v5_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V5: empirically dispatch between V3 and V4 by shape."""
+    return _softmax_into("cuda_operator_softmax_v5", x, out)
+
+
+def softmax_v5(x: torch.Tensor) -> torch.Tensor:
+    """Return row-wise Softmax V5 output."""
+    out = torch.empty_like(x)
+    return softmax_v5_into(x, out)
