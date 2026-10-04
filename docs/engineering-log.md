@@ -310,3 +310,24 @@ Validation:
 Performance was not robustly positive. Stable runs showed neutral behavior at several widths, ~2% improvement at 1024 x 128, but regressions at 128 x 32 and 1024 x 64.
 
 Decision: record V3 as a valid negative experiment. Small-row optimization should preserve a full block and pack multiple rows across warps instead of shrinking each row's block.
+
+
+## Softmax V4 packed warp-per-row scheduling
+
+For widths <=128, V4 packs eight rows into one 256-thread block, one row per warp. Wider rows fall back to V2.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **234 passed**;
+- memcheck/racecheck/synccheck clean on packed path and 129-column fallback;
+- ptxas: 30 registers/thread, 0 B shared memory, 0 barriers, 0 spills.
+
+The row-count sweep shows the key scheduling crossover:
+
+- <=1024 rows: mostly neutral / occasional small regressions;
+- 2048 rows: ~1.22x–1.28x faster across cols 32/64/128;
+- 4096 rows: ~1.67x–1.70x faster;
+- 8192 rows: ~2.15x–2.63x faster.
+
+Decision: keep V4 as the explicit packed-kernel experiment and use an empirical rows>=2048, cols<=128 dispatcher in V5.
