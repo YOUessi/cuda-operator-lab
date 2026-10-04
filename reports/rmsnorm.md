@@ -154,3 +154,62 @@ Raw artifacts:
 - `reports/data/rmsnorm_v0_v1_rtx4090_laptop.csv`
 - `reports/data/rmsnorm_v1_ptxas_sm89.txt`
 - `reports/data/rmsnorm_v1_compute_sanitizer.txt`
+
+
+---
+
+## V2 — warp-shuffle sum-of-squares reduction
+
+V2 holds V1's one-block-per-row execution and scalar IO constant, changing only the reduction machinery.
+
+```text
+thread-local sum(x^2)
+  -> warp shuffle within 8 warps
+  -> shared[8]
+  -> first-warp final sum
+  -> inverse RMS
+  -> parallel scalar output pass
+```
+
+### Validation
+
+- full repository suite: **313 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors.
+
+### Resources
+
+| Variant | Registers/thread | Shared memory/block | Spills |
+|---|---:|---:|---:|
+| V1 | 18 | 1,024 B | 0 |
+| V2 | 17 | **32 B** | 0 |
+
+### Performance
+
+20 warmups + 100 timed repeats:
+
+| Shape | V1 (us) | V2 (us) | V1 -> V2 |
+|---:|---:|---:|---:|
+| 128 x 128 | 11.248 | 11.152 | 1.01x |
+| 128 x 512 | **10.560** | 11.056 | 0.96x |
+| 128 x 1024 | 10.784 | **10.400** | 1.04x |
+| 128 x 4096 | 14.160 | **13.312** | 1.06x |
+| 1024 x 512 | 11.904 | **11.200** | 1.06x |
+| 1024 x 4096 | 27.232 | **26.512** | 1.03x |
+| 2048 x 4096 | 58.368 | **52.688** | **1.11x** |
+| 128 x 8192 | 17.408 | **17.248** | 1.01x |
+
+### Interpretation
+
+Warp-level reduction substantially reduces shared-memory footprint but gives only modest runtime improvement after V1. Some smaller shapes regress slightly. This indicates the next useful target is input/output traffic and instruction count.
+
+### V3 hypothesis
+
+Keep V2's reduction structure and change aligned IO to vectorized loads/stores. Use scalar fallback for unsafe alignment and verify the generated SASS before making any performance claim.
+
+Raw artifacts:
+
+- `reports/data/rmsnorm_v0_v1_v2_rtx4090_laptop.csv`
+- `reports/data/rmsnorm_v2_ptxas_sm89.txt`
+- `reports/data/rmsnorm_v2_compute_sanitizer.txt`
