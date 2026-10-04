@@ -840,3 +840,34 @@ Compared with unfused PyTorch add + LayerNorm:
 Fusion now produces measurable end-to-end wins on small/medium shapes, while wide/high-row cases still leave headroom.
 
 Next: replace the two shared-memory trees with warp-shuffle reductions while keeping residual fusion and scalar IO constant.
+
+## Fused Residual + LayerNorm V2 warp-shuffle reductions
+
+V2 preserves fused residual addition and scalar IO while replacing both V1 shared-memory trees with two-level warp-shuffle reductions.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **541 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 23 registers/thread, 32 B shared memory/block, 0 spills.
+
+Selected V1 -> V2:
+
+- 1024 x 128: 15.360 us -> 12.288 us;
+- 1024 x 512: 17.248 us -> 14.144 us;
+- 128 x 4096: 15.968 us -> 15.360 us;
+- 1024 x 4096: 46.080 us -> 45.024 us;
+- 128 x 8192: 25.600 us -> 24.576 us.
+
+End-to-end versus unfused PyTorch:
+
+- 1024 x 128: fused V2 12.288 us vs 14.336 us;
+- 1024 x 512: 14.144 us vs 14.208 us;
+- 128 x 4096: 15.360 us vs 14.336 us;
+- 1024 x 4096: 45.024 us vs 40.720 us;
+- 128 x 8192: 24.576 us vs 19.312 us.
+
+Conclusion: reduction overhead is largely removed. The next target is the memory path, especially on wide rows that repeatedly load input + residual and then weight + bias.
