@@ -2295,3 +2295,216 @@ The next experiment should target the input/output path, not further reduction-t
 RMSNorm V3 should keep the V2 warp reduction and add aligned vectorized input/weight/output handling, with safe scalar fallback and generated-code verification.
 
 Status: **validated; ready to merge**.
+
+## E16 — RMSNorm V3: aligned float4 IO
+
+Status: **validated experimental result; not a universal default**
+
+### Hypothesis
+
+After V2 reduced coordination overhead, the next target was global memory traffic. V3 keeps the V2 reduction structure and replaces scalar aligned IO with `float4` loads/stores when safe.
+
+### Implementation
+
+Branch:
+
+`feat/rmsnorm-v3-float4-io`
+
+Changes:
+
+- aligned `float4` input loads for sum-of-squares;
+- aligned `float4` weight loads and output stores;
+- V2 scalar fallback for non-multiple-of-four or unaligned tensors;
+- Python binding, benchmark variant, and V3 tests.
+
+### Validation
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- **337 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors.
+
+ptxas:
+
+```text
+V2:
+  17 registers/thread
+  32 B shared memory/block
+  0 spills
+
+V3:
+  22 registers/thread
+  32 B shared memory/block
+  0 spills
+```
+
+Artifacts:
+
+- `reports/data/rmsnorm_v2_v3_float4_rtx4090.csv`
+- `reports/data/rmsnorm_v2_v3_crossover100_rtx4090.csv`
+- `reports/data/rmsnorm_v3_ptxas_sm89.txt`
+
+### Warm-cache result
+
+Representative wins:
+
+```text
+128 x 4096:  13.312 -> 10.240 us
+128 x 8192:  17.200 -> 12.032 us
+1024 x 4096: 26.512 -> 21.472 us
+```
+
+But repeated tests revealed non-stable crossover behavior. In particular, 2048 x 4096 alternated between apparent V3 wins and regressions depending on benchmark context.
+
+### L2-evicted follow-up
+
+A 64 MiB CUDA buffer was touched before each timed kernel launch to evict L2 state. Variants were measured in alternating order.
+
+Selected results:
+
+```text
+1024 x 512:
+  V2 13.352 us
+  V3 16.384 us
+  V3 regresses
+
+1024 x 1024:
+  V2 25.576 us
+  V3 23.552 us
+  V3 ~1.09x
+
+128 x 4096:
+  V2 17.408 us
+  V3 16.168 us
+  V3 ~1.08x
+
+512 x 4096:
+  V2 47.104 us
+  V3 43.712 us
+  V3 ~1.08x
+
+128 x 8192:
+  V2 34.344 us
+  V3 23.416 us
+  V3 ~1.47x
+
+1024 x 8192:
+  V2 151.520 us
+  V3 147.752 us
+  V3 ~1.03x
+```
+
+The important result is that float4 benefits are shape- and cache-state-dependent. The larger warm-cache gains cannot be treated as universal.
+
+---
+
+## E17 — RMSNorm V4: profile-guided V2/V3 dispatcher candidate
+
+Status: **correctness validated; performance policy not accepted yet**
+
+Branch:
+
+`feat/rmsnorm-v4-shape-dispatch`
+
+V4 introduces no new device kernel. It selects V2 or V3 from a measured shape profile.
+
+The initial warm-cache policy was:
+
+```text
+512/1024 cols: vectorize at larger row counts
+4096 cols: vectorize below a measured crossover
+8192 cols: vectorize below a measured crossover
+```
+
+After L2-evicted measurements, this was replaced with a conservative cold-cache profile.
+
+Validation after the policy revision:
+
+- clean build: PASS;
+- **355 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors.
+
+Artifact:
+
+- `reports/data/rmsnorm_v2_v3_v4_final100_rtx4090.csv`
+
+### Why V4 is not merged
+
+The final benchmark still showed timing instability around crossover shapes. The same underlying device kernel could show materially different microsecond timings depending on benchmark order and whether it was called directly or through the dispatcher symbol.
+
+Therefore the current branch is intentionally kept as a candidate rather than merged into the default path.
+
+This is recorded as a positive engineering result: the project rejects a benchmark-derived optimization when its performance conclusion is not yet robust enough.
+
+### Next action
+
+Before accepting V4:
+
+1. stabilize GPU power/clock state where possible;
+2. use L2 eviction for memory-path comparisons;
+3. randomize or alternate V2/V3/V4 measurement order;
+4. run multiple independent rounds per shape;
+5. report median plus dispersion/confidence interval;
+6. only encode profile entries that remain clearly separated across runs.
+
+### E17 Operation — stable interleaved profiling
+
+The earlier V4 threshold experiment exposed a measurement flaw: each variant was executed in a contiguous timing group. GPU dynamic clocks and thermal/power state could therefore correlate with variant order.
+
+A new harness was added:
+
+`benchmarks/rmsnorm_stable_profile.py`
+
+Method:
+
+1. allocate a 64 MiB CUDA flush buffer;
+2. touch the buffer before every timed kernel launch;
+3. interleave V2/V3/V4 on every sample;
+4. alter variant order across samples;
+5. collect 7 independent round medians, 80 launches per variant per round;
+6. repeat with a second independent seed.
+
+A profile generator was also added:
+
+`benchmarks/generate_rmsnorm_dispatch_profile.py`
+
+Acceptance rule:
+
+```text
+choose V3 only when direct V2/V3 speedup >= 1.05x
+in every independent profiling run
+```
+
+Accepted shapes:
+
+| Shape | Seed 1 V2/V3 | Seed 2 V2/V3 | Decision |
+|---:|---:|---:|---|
+| 1024 x 512 | 1.231x | 1.271x | V3 |
+| 512 x 4096 | 1.170x | 1.181x | V3 |
+| 128 x 8192 | 1.435x | 1.435x | V3 |
+| 512 x 8192 | 1.051x | 1.051x | V3 |
+
+Examples rejected by the 5% gate:
+
+| Shape | Seed 1 | Seed 2 | Decision |
+|---:|---:|---:|---|
+| 1024 x 1024 | 1.043x | 1.029x | V2 |
+| 1024 x 4096 | 1.042x | 1.039x | V2 |
+| 1024 x 8192 | 0.999x | 0.997x | V2 |
+| 1536 x 4096 | 0.975x | 0.972x | V2 |
+| 1280 x 8192 | 0.960x | 0.957x | V2 |
+
+The V4 implementation was updated to exactly match the generated conservative profile. It no longer extrapolates row-count thresholds beyond measured evidence.
+
+A third independent run on the whitelist/fallback set preserved the same direct V2/V3 decision direction.
+
+Current status:
+
+- implementation correctness: PASS;
+- full repository suite: **355 passed**;
+- profiling methodology: stabilized enough for a hardware-specific static profile;
+- policy scope: RTX 4090 Laptop measured profile only;
+- unlisted shapes: V2 fallback.
