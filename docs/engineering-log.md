@@ -535,3 +535,16 @@ Artifacts:
 - `reports/data/rmsnorm_v4_whitelist_validation_rtx4090.csv`
 
 Engineering conclusion: a profile-guided static dispatcher is defensible only when its policy is tied to measured hardware evidence. Unmeasured shapes should not inherit guessed thresholds.
+
+## LayerNorm V0 serial-row baseline
+
+LayerNorm starts the fourth operator case study after Reduction, Softmax, and RMSNorm.
+
+V0 intentionally uses one CUDA thread per row:
+
+- serial mean over hidden width;
+- serial variance over hidden width;
+- inverse standard deviation via `rsqrtf`;
+- serial affine output `(x - mean) * inv_std * weight + bias`.
+
+The purpose is to expose the cost of two row-wise reductions plus affine output before introducing cooperative block reduction or Welford.
