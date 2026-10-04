@@ -3082,3 +3082,43 @@ Next validation:
 - benchmark against unfused PyTorch add + LayerNorm;
 - ptxas;
 - Compute Sanitizer.
+
+### E24 Operation 2 — Tang hardware validation
+
+```text
+clean CUDA 12.8 / sm_89 build: PASS
+full pytest: 499 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+ptxas:
+
+```text
+26 registers/thread
+0 B shared memory
+0 spills
+```
+
+Selected benchmark results versus unfused PyTorch add + LayerNorm:
+
+| Shape | Fused V0 | PyTorch unfused | Ratio |
+|---:|---:|---:|---:|
+| 128 x 128 | 90.112 us | 13.376 us | 6.74x slower |
+| 128 x 512 | 331.616 us | 13.120 us | 25.28x slower |
+| 128 x 1024 | 580.608 us | 13.264 us | 43.77x slower |
+| 128 x 4096 | 1874.432 us | 14.336 us | 130.75x slower |
+| 1024 x 4096 | 1882.112 us | 40.944 us | 45.97x slower |
+| 128 x 8192 | 3895.296 us | 19.136 us | 203.56x slower |
+
+Artifacts:
+
+- `reports/data/fused_residual_layernorm_v0_rtx4090.csv`
+- `reports/data/fused_residual_layernorm_v0_ptxas_sm89.txt`
+
+### V0 conclusion
+
+Fusion alone is not a performance win when the fused kernel serializes hidden-width work.
+
+Next action: V1 should use one 256-thread block per row, shared-memory mean/variance reductions, and parallel affine output while keeping residual addition fused into all three passes.
