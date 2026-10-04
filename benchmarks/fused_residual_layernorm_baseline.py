@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import fused_residual_layernorm_v0_into
+from cuda_operator_lab.bindings import fused_residual_layernorm_v0_into, fused_residual_layernorm_v1_into
 from cuda_operator_lab.references import fused_residual_layernorm
 
 
@@ -69,13 +69,10 @@ def main() -> None:
         )
         torch.cuda.synchronize()
 
-        fused_times = measure_us(
-            lambda: fused_residual_layernorm_v0_into(
-                x, residual, weight, bias, out, args.eps
-            ),
-            warmup=args.warmup,
-            repeats=args.repeats,
-        )
+        variants = [
+            ("v0_serial_fused", fused_residual_layernorm_v0_into),
+            ("v1_block_shared", fused_residual_layernorm_v1_into),
+        ]
         unfused_times = measure_us(
             lambda: fused_residual_layernorm(
                 x, residual, weight, bias, args.eps
@@ -83,33 +80,45 @@ def main() -> None:
             warmup=args.warmup,
             repeats=args.repeats,
         )
-        fused_median, _, fused_p95 = summarize(fused_times)
         unfused_median, _, unfused_p95 = summarize(unfused_times)
-        max_abs = float((actual - expected).abs().max().item()) if x.numel() else 0.0
 
-        print(
-            f"shape={rows:>4}x{cols:<5} "
-            f"v0={fused_median:>10.3f} us "
-            f"torch_unfused={unfused_median:>10.3f} us "
-            f"ratio={fused_median/unfused_median:>7.2f}x "
-            f"max_abs={max_abs:.3e}"
-        )
+        for name, implementation in variants:
+            out = torch.empty_like(x)
+            actual = implementation(x, residual, weight, bias, out, args.eps)
+            torch.cuda.synchronize()
+            max_abs = float((actual - expected).abs().max().item()) if x.numel() else 0.0
+            fused_times = measure_us(
+                lambda implementation=implementation, out=out: implementation(
+                    x, residual, weight, bias, out, args.eps
+                ),
+                warmup=args.warmup,
+                repeats=args.repeats,
+            )
+            fused_median, _, fused_p95 = summarize(fused_times)
 
-        records.append(
-            {
-                "rows": rows,
-                "cols": cols,
-                "variant": "v0_serial_fused",
-                "median_us": round(fused_median, 3),
-                "p95_us": round(fused_p95, 3),
-                "torch_unfused_median_us": round(unfused_median, 3),
-                "torch_unfused_p95_us": round(unfused_p95, 3),
-                "ratio_vs_torch_unfused": round(fused_median / unfused_median, 3)
-                if unfused_median
-                else None,
-                "max_abs_error": max_abs,
-            }
-        )
+            print(
+                f"shape={rows:>4}x{cols:<5} "
+                f"{name:<16} {fused_median:>10.3f} us "
+                f"torch_unfused={unfused_median:>10.3f} us "
+                f"ratio={fused_median/unfused_median:>7.2f}x "
+                f"max_abs={max_abs:.3e}"
+            )
+
+            records.append(
+                {
+                    "rows": rows,
+                    "cols": cols,
+                    "variant": name,
+                    "median_us": round(fused_median, 3),
+                    "p95_us": round(fused_p95, 3),
+                    "torch_unfused_median_us": round(unfused_median, 3),
+                    "torch_unfused_p95_us": round(unfused_p95, 3),
+                    "ratio_vs_torch_unfused": round(fused_median / unfused_median, 3)
+                    if unfused_median
+                    else None,
+                    "max_abs_error": max_abs,
+                }
+            )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8") as handle:
