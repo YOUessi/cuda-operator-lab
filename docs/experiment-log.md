@@ -1593,3 +1593,263 @@ Before coding the final dispatcher:
 3. choose conservative row thresholds from stable data;
 4. dispatch to V4 only above measured crossover;
 5. keep V3 below threshold and keep the wide-row path unchanged.
+
+
+---
+
+## E12 — Softmax V5: empirical V3/V4 shape dispatcher
+
+Status: **in progress**
+
+### Hypothesis
+
+V4 warp-per-row packing is clearly superior for high-row-count narrow matrices, but the 128 x 128 case regresses. Therefore the final default policy should dispatch between V3 and V4 from measured row-count/width crossover data rather than assuming all `cols <= 128` should use the packed path.
+
+### Operation 1 — experiment branch and crossover plan
+
+Created branch:
+
+```text
+feat/softmax-v5-shape-dispatch
+```
+
+Before changing code, sweep V3 versus V4 at widths:
+
+```text
+32, 64, 128
+```
+
+and row counts:
+
+```text
+128, 256, 512, 1024, 2048, 4096, 8192, 16384
+```
+
+Protocol:
+
+- same RTX 4090 Laptop;
+- float32;
+- 20 warmups;
+- 100 CUDA-event timed repeats;
+- same input per shape;
+- no source change during crossover measurement.
+
+Only after the sweep will thresholds be encoded.
+
+
+### Operation 2 — candidate dispatcher implementation
+
+A candidate V5 dispatcher was implemented on GitHub before hardware acceptance:
+
+```text
+cols <= 64 and rows >= 4096
+  -> V4 packed rows
+
+65 <= cols <= 128 and rows >= 2048
+  -> V4 packed rows
+
+otherwise
+  -> V3 width-aware path
+```
+
+The V3/V4 kernels themselves were not changed. V5 is a host-side dispatch policy over already validated device kernels.
+
+Added:
+
+- `cuda_operator_softmax_v5`;
+- Python V5 binding;
+- benchmark variant;
+- threshold-boundary correctness tests.
+
+The thresholds remained provisional until the crossover sweep below.
+
+### Operation 3 — clean Tang validation
+
+Tang fetched the GitHub branch and rebuilt from scratch.
+
+```text
+CUDA 12.8 / sm_89 build: PASS
+full repository pytest: 250 passed
+```
+
+No local source edits were used.
+
+### Operation 4 — V3/V4 crossover sweep
+
+Protocol:
+
+- 20 warmups;
+- 100 timed repeats;
+- CUDA events;
+- widths: 32 / 64 / 128;
+- rows: 128 / 256 / 512 / 1024 / 2048 / 4096 / 8192 / 16384.
+
+Selected results:
+
+| Shape | V3 width-aware | V4 packed | Interpretation |
+|---:|---:|---:|---|
+| 128 x 128 | **10.240 us** | 10.432 us | packing can regress small row counts |
+| 2048 x 32 | 10.240 us | 10.096 us | small gain, still near timer floor |
+| 2048 x 64 | 10.240 us | 10.128 us | small gain, still near timer floor |
+| 2048 x 128 | 11.104 us | **10.240 us** | clear packed-row win |
+| 4096 x 32 | 10.240 us | 10.240 us | neutral |
+| 4096 x 64 | 11.264 us | **10.368 us** | clear packed-row win |
+| 4096 x 128 | 14.336 us | **10.960 us** | strong packed-row win |
+| 8192 x 32 | 13.312 us | **10.240 us** | strong packed-row win |
+| 8192 x 64 | 14.672 us | **11.264 us** | strong packed-row win |
+| 8192 x 128 | 20.480 us | **13.312 us** | strong packed-row win |
+| 16384 x 128 | 32.672 us | **18.432 us** | ~1.77x V3 -> V4 |
+
+The sweep supports the candidate thresholds as conservative crossover points:
+
+```text
+32 / 64 cols:
+  use packed rows from 4096 rows
+
+65..128 cols:
+  use packed rows from 2048 rows
+```
+
+For smaller shapes V4 can sometimes be slightly faster, but the differences are close to the low-microsecond timing floor and are not robust enough to justify more aggressive default dispatch.
+
+Artifact:
+
+- `reports/data/softmax_v3_v4_crossover100_revalidate_rtx4090.csv`
+
+### Operation 5 — benchmark metadata bug discovered and fixed
+
+The first final V5 benchmark exposed a reporting bug in `benchmarks/softmax_benchmark.py`.
+
+The V5 fallback path correctly executed V3, but the CSV metadata reported:
+
+```text
+threads_per_block = 256
+```
+
+instead of the actual V3 width-aware 32 / 64 / 128-thread launch.
+
+This did **not** affect kernel execution or timing; it only made the benchmark metadata inaccurate.
+
+GitHub fix:
+
+- make V5 fallback inherit V3's width-aware `threads_per_block`;
+- remove a duplicate `v5_uses_packed` metadata assignment.
+
+After the fix:
+
+```text
+2047 x 128 V5 -> threads=128, rows/block=1
+2048 x 128 V5 -> threads=256, rows/block=8
+
+4095 x 32 V5 -> threads=32, rows/block=1
+4096 x 32 V5 -> threads=256, rows/block=8
+
+4095 x 64 V5 -> threads=64, rows/block=1
+4096 x 64 V5 -> threads=256, rows/block=8
+```
+
+### Operation 6 — final dispatcher-boundary benchmark
+
+Protocol:
+
+- 20 warmups;
+- 100 timed repeats;
+- V3 / V4 / V5 on identical inputs.
+
+Selected boundary results:
+
+| Shape | V3 | V4 | V5 | V5 path |
+|---:|---:|---:|---:|---|
+| 2047 x 128 | 11.232 us | 10.880 us | 11.216 us | V3 |
+| 2048 x 128 | 11.264 us | 10.528 us | **10.592 us** | V4 |
+| 2049 x 128 | 11.200 us | 10.384 us | **10.304 us** | V4 |
+| 4095 x 32 | 10.464 us | 10.240 us | 10.432 us | V3 |
+| 4096 x 32 | 10.368 us | 10.240 us | **10.240 us** | V4 |
+| 4097 x 32 | 10.384 us | 10.240 us | **10.240 us** | V4 |
+| 4095 x 64 | 11.264 us | 10.656 us | 11.264 us | V3 |
+| 4096 x 64 | 11.264 us | 10.432 us | **10.496 us** | V4 |
+| 4097 x 64 | 11.264 us | 10.528 us | **10.576 us** | V4 |
+| 4096 x 128 | 14.336 us | 10.912 us | **10.912 us** | V4 |
+| 16384 x 128 | 32.704 us | 18.432 us | **18.528 us** | V4 |
+
+Wide rows remain unchanged:
+
+```text
+1024 x 512:
+  V3 12.288 us
+  V5 12.288 us
+```
+
+Artifact:
+
+- `reports/data/softmax_v3_v4_v5_final100_revalidate_rtx4090.csv`
+
+### Operation 7 — dispatcher sanitizer validation
+
+Representative shapes intentionally cover both sides of both crossover thresholds and the wide fallback:
+
+```text
+4095 x 32   -> V3
+4096 x 32   -> V4
+2047 x 128  -> V3
+2048 x 128  -> V4
+1024 x 512  -> wide V3
+```
+
+CUDA 12.8 Compute Sanitizer:
+
+```text
+memcheck:
+  0 errors
+
+racecheck:
+  0 hazards / 0 errors / 0 warnings
+
+synccheck:
+  0 errors
+```
+
+Maximum observed element error was at most approximately `5.96e-8`; maximum row-sum error was at most approximately `2.38e-7`.
+
+Artifact:
+
+- `reports/data/softmax_v5_compute_sanitizer.txt`
+
+### Operation 8 — final regression check
+
+After the benchmark metadata fix:
+
+```text
+full repository pytest: 250 passed
+Python compileall for python/ + benchmarks/: PASS
+working tree: clean
+```
+
+### V5 conclusion
+
+The final Softmax narrow-row dispatcher is:
+
+```text
+cols <= 64 and rows >= 4096
+  -> V4: 8 warp-owned rows per 256-thread block
+
+65 <= cols <= 128 and rows >= 2048
+  -> V4 packed path
+
+otherwise
+  -> V3 width-aware one-row-per-block path
+```
+
+For `cols > 128`, V5 intentionally stays on the V3 wide-row path.
+
+V5 adds no new device kernel, so there is no new ptxas resource footprint: it dispatches between the already recorded V3 and V4 kernels.
+
+The important engineering outcome is not just a faster path but a measured **execution-layout dispatcher**: row packing is enabled only when row count is high enough for the scheduling benefit to be robust.
+
+Status: **validated; ready to merge**.
+
+### Next action
+
+Softmax now has a complete optimization story from serial row work to block parallelism, warp reduction, negative thread-count tuning, row packing, and empirical shape dispatch.
+
+The next operator should be **RMSNorm**, starting from a simple correct baseline and reusing the same operation ledger / sanitizer / benchmark discipline.

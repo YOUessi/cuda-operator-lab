@@ -484,3 +484,45 @@ extern "C" int cuda_operator_softmax_v4(
 
   return static_cast<int>(cudaGetLastError());
 }
+
+
+extern "C" int cuda_operator_softmax_v5(
+    const float* input,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    void* stream) {
+  const int validation =
+      validate_softmax_arguments(input, output, rows, cols);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  // Empirical crossover from the V3/V4 sweep:
+  // - 32/64 columns: packing becomes robust from 4096 rows.
+  // - 65..128 columns: packing becomes robust from 2048 rows.
+  // Smaller shapes retain V3's width-aware one-row-per-block policy.
+  const bool use_packed_rows =
+      (cols <= 64 && rows >= 4096) ||
+      (cols > 64 && cols <= 128 && rows >= 2048);
+
+  if (use_packed_rows) {
+    const std::uint64_t required_blocks =
+        (rows + kMaxWarpsPerBlock - 1) / kMaxWarpsPerBlock;
+    softmax_v4_warp_rows_kernel<<<
+        static_cast<unsigned int>(required_blocks),
+        kSoftmaxBlockThreads,
+        0,
+        cuda_stream>>>(input, output, rows, cols);
+  } else {
+    softmax_v3_width_aware_kernel<<<
+        static_cast<unsigned int>(rows),
+        softmax_v3_thread_count(cols),
+        0,
+        cuda_stream>>>(input, output, rows, cols);
+  }
+
+  return static_cast<int>(cudaGetLastError());
+}

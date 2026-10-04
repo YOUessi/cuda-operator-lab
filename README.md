@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Softmax V4
+## Current milestone: Softmax V5
 
 Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
 
@@ -229,3 +229,34 @@ python3 benchmarks/softmax_benchmark.py \
 - CUDA runtime reported by PyTorch: 12.8
 
 The machine-wide `/usr/bin/nvcc` is CUDA 11.5 and does not support `sm_89`. The repository therefore assembles a local CUDA 12.8 toolkit view under `.cuda-toolkit/` from the already-installed Anaconda package cache. Generated toolkit files are ignored by Git.
+
+
+### Softmax V5 empirical dispatcher
+
+V5 finalizes the narrow-row execution policy instead of applying V4 packing universally.
+
+```text
+cols <= 64 and rows >= 4096
+  -> 8 packed rows / 256-thread block
+
+65 <= cols <= 128 and rows >= 2048
+  -> packed-row path
+
+otherwise
+  -> V3 width-aware path
+```
+
+Clean RTX 4090 validation: **250 tests passed**; memcheck / racecheck / synccheck are clean.
+
+Representative final results:
+
+| Shape | V3 | V5 |
+|---:|---:|---:|
+| 2048 x 128 | 11.264 us | **10.592 us** |
+| 4096 x 64 | 11.264 us | **10.496 us** |
+| 4096 x 128 | 14.336 us | **10.912 us** |
+| 16384 x 128 | 32.704 us | **18.528 us** |
+
+The thresholds come from a dedicated row-count crossover sweep; the complete history, including the benchmark-metadata fix discovered during validation, is retained in `docs/experiment-log.md`.
+
+Next operator: **RMSNorm**.
