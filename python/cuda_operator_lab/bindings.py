@@ -64,16 +64,21 @@ class _Library:
             ]
             function.restype = ctypes.c_int
 
-        self.handle.cuda_operator_rmsnorm_v0.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_uint64,
-            ctypes.c_uint64,
-            ctypes.c_float,
-            ctypes.c_void_p,
-        ]
-        self.handle.cuda_operator_rmsnorm_v0.restype = ctypes.c_int
+        for name in (
+            "cuda_operator_rmsnorm_v0",
+            "cuda_operator_rmsnorm_v1",
+        ):
+            function = getattr(self.handle, name)
+            function.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_uint64,
+                ctypes.c_uint64,
+                ctypes.c_float,
+                ctypes.c_void_p,
+            ]
+            function.restype = ctypes.c_int
 
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
@@ -378,3 +383,42 @@ def rmsnorm_v0(
     """Return row-wise RMSNorm V0 output."""
     out = torch.empty_like(x)
     return rmsnorm_v0_into(x, weight, out, eps)
+
+
+def rmsnorm_v1_into(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    out: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Launch V1: one block per row with shared-memory sum-square reduction."""
+    _validate_rmsnorm_input(x, weight, eps)
+    _validate_rmsnorm_output(x, out)
+
+    rows, cols = x.shape
+    if rows == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_rmsnorm_v1(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(weight.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(rows),
+        ctypes.c_uint64(cols),
+        ctypes.c_float(eps),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def rmsnorm_v1(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Return row-wise RMSNorm V1 output."""
+    out = torch.empty_like(x)
+    return rmsnorm_v1_into(x, weight, out, eps)
