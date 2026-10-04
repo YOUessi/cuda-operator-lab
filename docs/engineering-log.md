@@ -423,3 +423,23 @@ Representative V0 -> V1 speedups:
 The PyTorch comparison in this phase is a multi-op correctness expression, not an optimized fused RMSNorm kernel, so its latency is retained for context only.
 
 Next: replace the shared-memory tree with warp shuffle while holding the rest of the kernel constant.
+
+
+## RMSNorm V2 warp-shuffle reduction
+
+V2 keeps one 256-thread block per row and replaces V1's 256-float shared-memory tree with two-level warp shuffle.
+
+Validation:
+
+- full suite: **313 passed**;
+- memcheck/racecheck/synccheck clean;
+- ptxas: 17 registers/thread, 32 B shared memory/block, 0 spills.
+
+Selected V1 -> V2:
+
+- 128 x 4096: 14.160 us -> 13.312 us (~1.06x);
+- 1024 x 512: 11.904 us -> 11.200 us (~1.06x);
+- 2048 x 4096: 58.368 us -> 52.688 us (~1.11x);
+- 128 x 512: 10.560 us -> 11.056 us (small regression).
+
+Conclusion: reduction coordination is reduced, but the result is already moving toward input/output-path limits. Next target is vectorized IO rather than deeper reduction-tree tuning.
