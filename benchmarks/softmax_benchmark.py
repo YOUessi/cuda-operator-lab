@@ -16,6 +16,7 @@ from cuda_operator_lab.bindings import (
     softmax_v1_into,
     softmax_v2_into,
     softmax_v3_into,
+    softmax_v4_into,
 )
 from cuda_operator_lab.references import row_softmax
 
@@ -39,6 +40,7 @@ VARIANTS: dict[str, SoftmaxFn] = {
     "v1_block_shared": softmax_v1_into,
     "v2_warp_shuffle": softmax_v2_into,
     "v3_width_aware": softmax_v3_into,
+    "v4_packed_warps": softmax_v4_into,
 }
 
 
@@ -148,6 +150,12 @@ def main() -> None:
                 )
             )
 
+            rows_per_block = (
+                8
+                if name == "v4_packed_warps" and cols <= 128
+                else 1
+            )
+
             record = {
                 "operator": "row_softmax",
                 "variant": name,
@@ -155,6 +163,7 @@ def main() -> None:
                 "rows": rows,
                 "cols": cols,
                 "threads_per_block": threads_per_block,
+                "rows_per_block": rows_per_block,
                 "elements": rows * cols,
                 "logical_io_bytes": logical_io_bytes,
                 "median_us": round(median_us, 3),
@@ -175,6 +184,7 @@ def main() -> None:
                 f"shape={rows:>4}x{cols:<5} "
                 f"{name:<16} {median_us:>10.3f} us  "
                 f"threads={threads_per_block:>3}  "
+                f"rows/block={rows_per_block:>2}  "
                 f"torch={torch_median:>9.3f} us  "
                 f"slowdown={median_us / torch_median:>8.2f}x  "
                 f"max_abs={max_abs_error:.3e}"
