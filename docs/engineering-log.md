@@ -151,3 +151,40 @@ V4 therefore validates two things at once:
 2. vectorization without shape-aware launch geometry is not universally beneficial.
 
 At 262K, the unchanged scalar-based block count launches many threads that have no float4 work. The next isolated experiment should correct vector-path launch geometry before changing any other kernel mechanism.
+
+
+## Reduction V5 shape-aware dispatch
+
+### Design
+
+V5 keeps the V4 float4 kernel body and V3 fallback unchanged. It corrects the launch policy:
+
+- vector grid size is computed from `N/4` work items rather than scalar `N`;
+- the final measured vector crossover is `N >= 524,288`;
+- smaller inputs use V3;
+- unaligned contiguous inputs use V3.
+
+The crossover was not guessed. An initial vector-work-only candidate was benchmarked, then hot/cold sweeps were used to choose a conservative threshold that avoids relying on a cache-state-sensitive small-shape win.
+
+### Validation
+
+- clean build: PASS;
+- full test suite: **116 passed**;
+- aligned vector path sanitizer: memcheck 0, racecheck 0, synccheck 0;
+- below-crossover scalar path memcheck: 0;
+- unaligned fallback memcheck: 0.
+
+### Final performance
+
+L2-evicted, 20 warmups + 100 repeats:
+
+- 512K: 10.256 us -> 10.240 us;
+- 1M: 17.008 us -> 15.376 us;
+- 4M: 47.104 us -> 45.152 us;
+- 16M: 176.128 us -> 167.936 us.
+
+The full operation-by-operation record is maintained in `docs/experiment-log.md`, including the preliminary 32K threshold, crossover sweeps, raw CSVs, final threshold revision, and sanitizer evidence.
+
+### Decision
+
+Stop deepening Reduction after V5. The next implementation target is row-wise Softmax so the project demonstrates the same profile-guided workflow on a multi-stage normalization operator.

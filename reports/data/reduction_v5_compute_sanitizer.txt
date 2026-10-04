@@ -1,0 +1,29 @@
+Compute Sanitizer 2025.1.0.0 (CUDA 12.8 package)
+
+Final V5 dispatch validation after setting the empirical crossover to N=524,288.
+
+Aligned vector path:
+  N = 1,048,576
+  pointer mod 16 = 0
+
+memcheck:
+  ERROR SUMMARY: 0 errors
+
+racecheck:
+  RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+synccheck:
+  ERROR SUMMARY: 0 errors
+
+Below-crossover scalar path:
+  N = 262,144
+
+memcheck:
+  ERROR SUMMARY: 0 errors
+
+Unaligned contiguous fallback:
+  N = 1,000,003
+  pointer mod 16 = 4
+
+memcheck:
+  ERROR SUMMARY: 0 errors

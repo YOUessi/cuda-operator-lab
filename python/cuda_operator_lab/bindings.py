@@ -35,6 +35,7 @@ class _Library:
             "cuda_operator_reduction_v2",
             "cuda_operator_reduction_v3",
             "cuda_operator_reduction_v4",
+            "cuda_operator_reduction_v5",
         ):
             function = getattr(self.handle, name)
             function.argtypes = [
@@ -156,3 +157,12 @@ def reduction_v4_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
 
 def reduction_v4(x: torch.Tensor) -> torch.Tensor:
     return reduction_v4_into(x, _allocate_scalar(x))
+
+
+def reduction_v5_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V5: V4 float4 kernel with vector-work-based launch geometry."""
+    return _reduction_into("cuda_operator_reduction_v5", x, out)
+
+
+def reduction_v5(x: torch.Tensor) -> torch.Tensor:
+    return reduction_v5_into(x, _allocate_scalar(x))

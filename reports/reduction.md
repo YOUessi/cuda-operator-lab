@@ -342,3 +342,91 @@ Raw artifacts:
 - `reports/data/reduction_v4_ptxas_sm89.txt`
 - `reports/data/reduction_v4_sass_sm89.txt`
 - `reports/data/reduction_v4_compute_sanitizer.txt`
+
+
+---
+
+## V5 — vector-work-aware launch and dispatch
+
+### Change
+
+V5 deliberately reuses the V4 float4 kernel body. Only host-side policy changes.
+
+The first V5 candidate changed vector launch geometry from scalar work:
+
+```text
+ceil(N / 256)
+```
+
+to actual vector work:
+
+```text
+ceil((N / 4) / 256)
+```
+
+This directly fixes the V4 overlaunch problem.
+
+A cross-shape hot/cold sweep then showed that small-shape gains were sensitive to cache / run state. The final policy therefore uses a conservative measured crossover:
+
+```text
+N < 524,288:
+  V3 scalar warp-shuffle
+
+N >= 524,288 and 16-byte aligned:
+  float4 vector path with vector-work-based grid
+
+unaligned:
+  V3 scalar fallback
+```
+
+### Validation
+
+Final branch validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- complete test suite: **116 passed**;
+- threshold-boundary tests: PASS;
+- non-default stream: PASS;
+- pre-filled output reset: PASS.
+
+Compute Sanitizer 12.8:
+
+```text
+aligned vector path:
+  memcheck: 0 errors
+  racecheck: 0 hazards / 0 errors
+  synccheck: 0 errors
+
+below-crossover scalar path:
+  memcheck: 0 errors
+
+unaligned fallback:
+  memcheck: 0 errors
+```
+
+### Final stable L2-evicted comparison
+
+20 warmups + 100 timed repeats:
+
+| N | V3 (us) | V5 (us) | V3 → V5 | torch.sum (us) |
+|---:|---:|---:|---:|---:|
+| 524,288 | 10.256 | 10.240 | ~1.00x | 12.288 |
+| 1,048,576 | 17.008 | **15.376** | 1.11x | 17.408 |
+| 4,194,304 | 47.104 | **45.152** | 1.04x | 48.128 |
+| 16,777,216 | 176.128 | **167.936** | 1.05x | 170.896 |
+
+At 262K, final V5 deliberately dispatches to the same V3 scalar kernel; differences between separate benchmark calls at that shape are measurement/run-state variation, not a different kernel path.
+
+### Interpretation
+
+V5 demonstrates that operator optimization is not only kernel instruction tuning. Dispatch policy and launch geometry can determine whether an otherwise good kernel wins or regresses.
+
+The Reduction sequence is now complete enough to serve as the project's first end-to-end optimization case study:
+
+```text
+serial -> parallel -> atomics -> shared memory -> warp shuffle -> vector loads -> shape-aware dispatch
+```
+
+Further Reduction-only tuning would have diminishing portfolio value. The next operator should reuse the same measurement discipline on a more complex normalization primitive.
+
+Raw artifacts and every intermediate operation are listed in `docs/experiment-log.md`.
