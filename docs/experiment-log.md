@@ -2449,3 +2449,62 @@ Before accepting V4:
 4. run multiple independent rounds per shape;
 5. report median plus dispersion/confidence interval;
 6. only encode profile entries that remain clearly separated across runs.
+
+### E17 Operation — stable interleaved profiling
+
+The earlier V4 threshold experiment exposed a measurement flaw: each variant was executed in a contiguous timing group. GPU dynamic clocks and thermal/power state could therefore correlate with variant order.
+
+A new harness was added:
+
+`benchmarks/rmsnorm_stable_profile.py`
+
+Method:
+
+1. allocate a 64 MiB CUDA flush buffer;
+2. touch the buffer before every timed kernel launch;
+3. interleave V2/V3/V4 on every sample;
+4. alter variant order across samples;
+5. collect 7 independent round medians, 80 launches per variant per round;
+6. repeat with a second independent seed.
+
+A profile generator was also added:
+
+`benchmarks/generate_rmsnorm_dispatch_profile.py`
+
+Acceptance rule:
+
+```text
+choose V3 only when direct V2/V3 speedup >= 1.05x
+in every independent profiling run
+```
+
+Accepted shapes:
+
+| Shape | Seed 1 V2/V3 | Seed 2 V2/V3 | Decision |
+|---:|---:|---:|---|
+| 1024 x 512 | 1.231x | 1.271x | V3 |
+| 512 x 4096 | 1.170x | 1.181x | V3 |
+| 128 x 8192 | 1.435x | 1.435x | V3 |
+| 512 x 8192 | 1.051x | 1.051x | V3 |
+
+Examples rejected by the 5% gate:
+
+| Shape | Seed 1 | Seed 2 | Decision |
+|---:|---:|---:|---|
+| 1024 x 1024 | 1.043x | 1.029x | V2 |
+| 1024 x 4096 | 1.042x | 1.039x | V2 |
+| 1024 x 8192 | 0.999x | 0.997x | V2 |
+| 1536 x 4096 | 0.975x | 0.972x | V2 |
+| 1280 x 8192 | 0.960x | 0.957x | V2 |
+
+The V4 implementation was updated to exactly match the generated conservative profile. It no longer extrapolates row-count thresholds beyond measured evidence.
+
+A third independent run on the whitelist/fallback set preserved the same direct V2/V3 decision direction.
+
+Current status:
+
+- implementation correctness: PASS;
+- full repository suite: **355 passed**;
+- profiling methodology: stabilized enough for a hardware-specific static profile;
+- policy scope: RTX 4090 Laptop measured profile only;
+- unlisted shapes: V2 fallback.
