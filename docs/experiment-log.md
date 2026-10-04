@@ -35,7 +35,7 @@ Ordinary source edits happen on GitHub feature branches. Tang is used only when 
 | V2 | shared-memory block reduction + one atomic/block | 45 passed | 16M cold ≈ 177 us, near PyTorch; V1 plateau disappears | `58baea1` |
 | V3 | warp shuffle for intra-block reduction | 67 passed | +14% at 262K, ~0% at 16M; large input becomes memory dominated | `83e3820` |
 | V4 | aligned `float4` / 128-bit input loads | 89 passed | +4.8% at 16M, but regression at 262K due scalar-based launch geometry | `93355b2` |
-| V5 | vector-work-based grid + empirical shape dispatch | 116 passed | fixes V4 medium-shape overlaunch; 16M cold 167.936 us | PR #5 |
+| V5 | vector-work-based grid + empirical shape dispatch | 116 passed | fixes V4 medium-shape overlaunch; 16M cold 167.936 us | `a472636` |
 
 ---
 
@@ -486,6 +486,49 @@ V0 serial
 Reduction is now sufficiently deep for the project. The next operator should reuse the same benchmark / correctness / profiling discipline rather than continue adding increasingly marginal Reduction-only optimizations.
 
 Next target: **row-wise Softmax baseline and optimization ladder**.
+
+---
+
+## E07 — Softmax V0: one serial CUDA thread per row
+
+Status: **in progress**
+
+### Hypothesis
+
+A deliberately simple row-wise baseline should expose the cost of serial max / exp-sum / normalize work inside each row while still allowing different rows to run in parallel.
+
+### Operation 1 — GitHub implementation
+
+Added a new 2-D float32 Softmax path:
+
+```text
+one CUDA thread
+  -> one row
+  -> serial max pass
+  -> serial exp + sum pass
+  -> serial normalization pass
+```
+
+The kernel subtracts the row maximum before exponentiation for numerical stability.
+
+Added:
+
+- `csrc/softmax/softmax.cu` / `.cuh`;
+- CMake integration;
+- ctypes binding using the active PyTorch CUDA stream;
+- `torch.softmax(..., dim=-1)` reference;
+- correctness tests across row/column boundaries and extreme logits;
+- preallocated-output and non-default-stream checks;
+- `benchmarks/softmax_baseline.py`.
+
+### Required hardware validation
+
+- clean CUDA 12.8 / SM 8.9 build;
+- complete regression suite, including all Reduction tests;
+- row-softmax numerical agreement with PyTorch;
+- representative benchmark matrix across rows × columns;
+- Compute Sanitizer on a representative non-power-of-two width;
+- record the first Softmax bottleneck from measured data before choosing V1.
 
 ---
 
