@@ -2175,3 +2175,123 @@ RMSNorm V2 should keep one block per row and all scalar input/output passes unch
 This will isolate reduction coordination overhead before any float4/vectorized IO experiment.
 
 Status: **validated; ready to merge**.
+
+
+---
+
+## E15 — RMSNorm V2: warp-shuffle sum-of-squares reduction
+
+Status: **in progress**
+
+### Hypothesis
+
+RMSNorm V1 removes the serial hidden-width bottleneck, leaving the full 256-thread shared-memory tree as the next isolated coordination cost.
+
+### Scope lock
+
+V2 keeps:
+
+- one 256-thread block per row;
+- scalar input / weight / output access;
+- thread-local strided sum of squares;
+- identical RMSNorm math and epsilon;
+- no vectorized IO;
+- no shape dispatch.
+
+Only the block reduction changes:
+
+```text
+V1:
+256 shared partials + repeated __syncthreads()
+
+V2:
+warp shuffle within 8 warps
+  -> 8 shared warp sums
+  -> first warp final shuffle
+```
+
+The experiment will measure whether the coordination reduction matters after V1.
+
+
+### Operation 2 — clean Tang validation
+
+```text
+clean CUDA 12.8 / sm_89 build: PASS
+full repository pytest: 313 passed
+```
+
+### Operation 3 — stable V0/V1/V2 benchmark
+
+Protocol:
+
+- 20 warmups;
+- 100 timed repeats;
+- CUDA events;
+- float32;
+- eps = 1e-5.
+
+Selected V1 -> V2 results:
+
+| Shape | V1 shared tree | V2 warp shuffle | V1 -> V2 |
+|---:|---:|---:|---:|
+| 128 x 128 | 11.248 us | 11.152 us | 1.01x |
+| 128 x 512 | **10.560 us** | 11.056 us | 0.96x |
+| 128 x 1024 | 10.784 us | **10.400 us** | 1.04x |
+| 128 x 4096 | 14.160 us | **13.312 us** | 1.06x |
+| 1024 x 512 | 11.904 us | **11.200 us** | 1.06x |
+| 1024 x 4096 | 27.232 us | **26.512 us** | 1.03x |
+| 2048 x 4096 | 58.368 us | **52.688 us** | **1.11x** |
+| 128 x 8192 | 17.408 us | **17.248 us** | 1.01x |
+
+The result is shape-dependent rather than universally positive. V2 helps when enough row blocks / reduction work are present, but the 128 x 512 case slightly regresses.
+
+Artifact:
+
+- `reports/data/rmsnorm_v0_v1_v2_rtx4090_laptop.csv`
+
+### Operation 4 — ptxas
+
+```text
+V1:
+  registers/thread: 18
+  shared memory/block: 1024 B
+  spills: 0
+
+V2:
+  registers/thread: 17
+  shared memory/block: 32 B
+  spills: 0
+```
+
+V2 reduces shared-memory footprint by 32x and one register/thread.
+
+Artifact:
+
+- `reports/data/rmsnorm_v2_ptxas_sm89.txt`
+
+### Operation 5 — Compute Sanitizer
+
+Representative shape: `17 x 4097`.
+
+```text
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+max_abs_error: 9.54e-7
+```
+
+Artifact:
+
+- `reports/data/rmsnorm_v2_compute_sanitizer.txt`
+
+### V2 conclusion
+
+Warp shuffle removes almost all block scratch, but after V1 the reduction tree is not the only remaining cost. The largest gain in this matrix is about 11% at `2048 x 4096`, while some smaller shapes are neutral or slightly worse.
+
+The next experiment should target the input/output path, not further reduction-tree tuning.
+
+### Next action
+
+RMSNorm V3 should keep the V2 warp reduction and add aligned vectorized input/weight/output handling, with safe scalar fallback and generated-code verification.
+
+Status: **validated; ready to merge**.

@@ -8,6 +8,17 @@ namespace {
 
 constexpr int kRmsNormV0Threads = 128;
 constexpr int kRmsNormV1Threads = 256;
+constexpr int kRmsNormV2Threads = 256;
+constexpr int kWarpSize = 32;
+constexpr int kWarpsPerBlock = kRmsNormV2Threads / kWarpSize;
+constexpr unsigned int kFullWarpMask = 0xffffffffU;
+
+__device__ __forceinline__ float warp_reduce_sum(float value) {
+  for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+    value += __shfl_down_sync(kFullWarpMask, value, offset);
+  }
+  return value;
+}
 
 __global__ void rmsnorm_v0_serial_row_kernel(
     const float* input,
@@ -85,6 +96,54 @@ __global__ void rmsnorm_v1_block_row_kernel(
   }
 }
 
+__global__ void rmsnorm_v2_warp_row_kernel(
+    const float* input,
+    const float* weight,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps) {
+  __shared__ float warp_sums[kWarpsPerBlock];
+
+  const std::uint64_t row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+
+  const unsigned int tid = threadIdx.x;
+  const int lane = tid & (kWarpSize - 1);
+  const int warp_id = tid / kWarpSize;
+  const float* row_input = input + row * cols;
+  float* row_output = output + row * cols;
+
+  float local_sum_squares = 0.0F;
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    const float value = row_input[col];
+    local_sum_squares += value * value;
+  }
+
+  local_sum_squares = warp_reduce_sum(local_sum_squares);
+  if (lane == 0) {
+    warp_sums[warp_id] = local_sum_squares;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    float block_sum = lane < kWarpsPerBlock ? warp_sums[lane] : 0.0F;
+    block_sum = warp_reduce_sum(block_sum);
+    if (lane == 0) {
+      const float mean_square = block_sum / static_cast<float>(cols);
+      warp_sums[0] = rsqrtf(mean_square + eps);
+    }
+  }
+  __syncthreads();
+
+  const float inverse_rms = warp_sums[0];
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    row_output[col] = row_input[col] * inverse_rms * weight[col];
+  }
+}
+
 int validate_rmsnorm_arguments(
     const float* input,
     const float* weight,
@@ -150,6 +209,30 @@ extern "C" int cuda_operator_rmsnorm_v1(
   rmsnorm_v1_block_row_kernel<<<
       static_cast<unsigned int>(rows),
       kRmsNormV1Threads,
+      0,
+      cuda_stream>>>(input, weight, output, rows, cols, eps);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_rmsnorm_v2(
+    const float* input,
+    const float* weight,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps,
+    void* stream) {
+  const int validation =
+      validate_rmsnorm_arguments(input, weight, output, rows, cols, eps);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  rmsnorm_v2_warp_row_kernel<<<
+      static_cast<unsigned int>(rows),
+      kRmsNormV2Threads,
       0,
       cuda_stream>>>(input, weight, output, rows, cols, eps);
   return static_cast<int>(cudaGetLastError());
