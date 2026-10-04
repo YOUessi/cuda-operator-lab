@@ -491,11 +491,11 @@ Next target: **row-wise Softmax baseline and optimization ladder**.
 
 ## E07 — Softmax V0: one serial CUDA thread per row
 
-Status: **in progress**
+Status: **validated; ready to merge**
 
 ### Hypothesis
 
-A deliberately simple row-wise baseline should expose the cost of serial max / exp-sum / normalize work inside each row while still allowing different rows to run in parallel.
+A deliberately simple row-wise baseline should expose the cost of serial max / exp-sum / normalize work inside each row while still allowing different rows to execute in parallel.
 
 ### Operation 1 — GitHub implementation
 
@@ -505,7 +505,7 @@ Added a new 2-D float32 Softmax path:
 one CUDA thread
   -> one row
   -> serial max pass
-  -> serial exp + sum pass
+  -> serial exp + denominator pass
   -> serial normalization pass
 ```
 
@@ -515,20 +515,135 @@ Added:
 
 - `csrc/softmax/softmax.cu` / `.cuh`;
 - CMake integration;
-- ctypes binding using the active PyTorch CUDA stream;
+- ctypes binding on the active PyTorch CUDA stream;
 - `torch.softmax(..., dim=-1)` reference;
-- correctness tests across row/column boundaries and extreme logits;
-- preallocated-output and non-default-stream checks;
+- correctness tests for row/column boundaries, extreme logits, preallocated output, non-default stream, and non-contiguous rejection;
 - `benchmarks/softmax_baseline.py`.
 
-### Required hardware validation
+### Operation 2 — first Tang build and compile failure
 
-- clean CUDA 12.8 / SM 8.9 build;
-- complete regression suite, including all Reduction tests;
-- row-softmax numerical agreement with PyTorch;
-- representative benchmark matrix across rows × columns;
-- Compute Sanitizer on a representative non-power-of-two width;
-- record the first Softmax bottleneck from measured data before choosing V1.
+The first clean CUDA 12.8 / SM 8.9 build failed because `CUDART_INF_F` was not defined in the assembled toolkit header set.
+
+Observed compiler error:
+
+```text
+softmax.cu: identifier "CUDART_INF_F" is undefined
+```
+
+The fix was made on GitHub, not locally:
+
+- include `<cfloat>`;
+- initialize the row maximum with `-FLT_MAX`.
+
+Commit: `c1ff891`.
+
+### Operation 3 — clean hardware regression
+
+Tang fetched the fixed GitHub branch and rebuilt from scratch.
+
+```text
+CUDA 12.8 / sm_89 build: PASS
+full repository pytest: 131 passed
+```
+
+The 131 tests include the complete Reduction regression suite plus the new Softmax tests.
+
+### Operation 4 — Softmax V0 benchmark
+
+Protocol:
+
+- CUDA events;
+- 5 warmups;
+- 20 timed repeats;
+- float32;
+- same CUDA input used for our kernel and `torch.softmax`.
+
+| Shape | V0 serial-row | torch.softmax | Slowdown |
+|---:|---:|---:|---:|
+| 1 × 128 | 18.432 us | 9.216 us | 2.00x |
+| 32 × 128 | 40.800 us | 9.216 us | 4.43x |
+| 128 × 128 | 60.416 us | 9.216 us | 6.56x |
+| 128 × 512 | 214.736 us | 9.376 us | 22.90x |
+| 128 × 1024 | 416.768 us | 8.192 us | 50.88x |
+| 128 × 4096 | 1,595.392 us | 9.328 us | **171.03x** |
+| 1024 × 128 | 57.344 us | 9.328 us | 6.15x |
+| 1024 × 512 | 209.440 us | 10.160 us | 20.61x |
+| 1024 × 4096 | 1,607.408 us | 37.600 us | 42.75x |
+
+Numerical behavior remained close to PyTorch:
+
+- max absolute element error: on the order of `1e-8`;
+- largest recorded row-sum error: about `3.10e-6`.
+
+Raw artifact:
+
+- `reports/data/softmax_v0_rtx4090_laptop.csv`
+
+### Operation 5 — ptxas resource capture
+
+CUDA 12.8 / `sm_89`:
+
+```text
+registers/thread: 24
+shared memory/block: 0 B
+spill stores: 0
+spill loads: 0
+barriers: 0
+stack frame: 0 B
+```
+
+Artifact:
+
+- `reports/data/softmax_v0_ptxas_sm89.txt`
+
+### Operation 6 — Compute Sanitizer
+
+Representative non-power-of-two shape: `[17, 513]`.
+
+CUDA 12.8 Compute Sanitizer:
+
+```text
+memcheck:  0 errors
+racecheck: 0 hazards / 0 errors
+synccheck: 0 errors
+```
+
+Observed row-sum error during sanitizer runs stayed below approximately `8.35e-7`.
+
+Artifact:
+
+- `reports/data/softmax_v0_compute_sanitizer.txt`
+
+### Conclusion
+
+The first Softmax bottleneck is clear and differs from Reduction V0.
+
+Rows already execute in parallel, but **every individual row is completely serial**:
+
+```text
+serial max over cols
+  -> serial exp + sum over cols
+  -> serial normalize over cols
+```
+
+The width dimension therefore dominates. At fixed 128 rows, increasing width from 128 to 4096 increases V0 latency from about 60 us to about 1.6 ms, while PyTorch stays around 8–9 us.
+
+The 128 × 4096 case is roughly **171x slower than PyTorch**.
+
+### Next action
+
+Softmax V1 should parallelize work **inside each row** while keeping the algorithm structure otherwise unchanged:
+
+```text
+one block per row
+  -> per-thread strided max
+  -> shared-memory max reduction
+  -> parallel exp + local sum
+  -> shared-memory sum reduction
+  -> parallel normalize
+```
+
+Warp shuffle is intentionally deferred to a later version so the value of basic intra-row parallelism and shared-memory reduction can be measured independently.
 
 ---
 
