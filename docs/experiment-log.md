@@ -2027,3 +2027,44 @@ one block per row
 This mirrors the project's profile-guided discipline: isolate intra-row parallelism first, then measure the remaining coordination cost.
 
 Status: **validated; ready to merge**.
+
+
+---
+
+## E14 — RMSNorm V1: one block per row + shared-memory sum-of-squares reduction
+
+Status: **in progress**
+
+### Hypothesis
+
+RMSNorm V0 is row-parallel but hidden-width serial. The first isolated optimization is to parallelize only the per-row hidden dimension.
+
+### Scope lock
+
+V1 will keep:
+
+- float32 input / weight / output;
+- same RMSNorm math and epsilon;
+- one row as the unit of normalization;
+- scalar loads/stores;
+- no warp shuffle;
+- no vectorized IO;
+- no shape dispatch.
+
+V1 changes only the row execution layout:
+
+```text
+one 256-thread block per row
+  -> thread-local sum(x^2) over strided columns
+  -> shared-memory tree sum
+  -> inverse RMS
+  -> parallel x * inverse_rms * weight
+```
+
+Planned evidence:
+
+- clean build and full pytest;
+- V0/V1/PyTorch benchmark;
+- memcheck / racecheck / synccheck;
+- ptxas resource capture;
+- raw results and all issues recorded before merge.
