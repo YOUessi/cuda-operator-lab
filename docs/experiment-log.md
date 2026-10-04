@@ -1382,3 +1382,31 @@ Held constant:
 - no float4/vectorized IO yet.
 
 This experiment directly tests the scheduling/packing hypothesis revealed by V3.
+
+
+### Operation 2 — GitHub implementation
+
+Implemented V4 without local source edits.
+
+Small-row path:
+
+```text
+256-thread block
+  -> 8 warps
+  -> warp 0 handles row 0
+  -> ...
+  -> warp 7 handles row 7
+```
+
+Each warp performs its row's max and denominator reductions entirely with `__shfl_down_sync`. No shared memory or block-wide barrier is required on the packed path.
+
+For `cols > 128`, the V4 API dispatches to the validated V2 one-block-per-row kernel.
+
+Added:
+
+- V4 C ABI;
+- Python binding;
+- benchmark variant with rows/block metadata;
+- correctness tests for row counts not divisible by 8;
+- 128/129 dispatch boundary tests;
+- active-stream and output-reuse tests.
