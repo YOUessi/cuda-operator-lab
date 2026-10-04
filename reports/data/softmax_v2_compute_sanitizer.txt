@@ -1,0 +1,21 @@
+CUDA 12.8 Compute Sanitizer 2025.1.0.0
+
+Representative input:
+  shape: [17, 513]
+  dtype: float32
+  implementation: softmax_v2
+
+memcheck:
+  max_abs: 3.725290298461914e-09
+  max_row_sum_err: 1.1920928955078125e-07
+  ERROR SUMMARY: 0 errors
+
+racecheck:
+  max_abs: 3.725290298461914e-09
+  max_row_sum_err: 1.1920928955078125e-07
+  RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+synccheck:
+  max_abs: 3.725290298461914e-09
+  max_row_sum_err: 1.1920928955078125e-07
+  ERROR SUMMARY: 0 errors
