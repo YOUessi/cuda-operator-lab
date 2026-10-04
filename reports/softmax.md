@@ -383,3 +383,78 @@ Raw artifacts:
 - `reports/data/softmax_v3_v4_warp_rows100_rtx4090.csv`
 - `reports/data/softmax_v4_ptxas_sm89.txt`
 - `reports/data/softmax_v4_compute_sanitizer.txt`
+
+
+---
+
+## V5 — empirical V3/V4 shape dispatcher
+
+V5 adds no new CUDA device kernel. It selects between the already validated V3 width-aware layout and V4 packed-row layout.
+
+Final dispatch:
+
+```text
+cols <= 64 and rows >= 4096
+    -> V4 packed: 8 rows / 256-thread block
+
+65 <= cols <= 128 and rows >= 2048
+    -> V4 packed
+
+otherwise
+    -> V3 width-aware one-row-per-block
+```
+
+For `cols > 128`, V5 stays on V3's wide-row path.
+
+### Why the thresholds are width-specific
+
+The 20-warmup / 100-repeat crossover sweep showed that V4 can be neutral or slightly worse at low row counts, while the scheduling benefit becomes robust earlier for 128-column rows than for 32/64-column rows.
+
+Representative crossover observations:
+
+| Shape | V3 | V4 | Preferred |
+|---:|---:|---:|---|
+| 128 x 128 | **10.240 us** | 10.432 us | V3 |
+| 2048 x 128 | 11.104 us | **10.240 us** | V4 |
+| 4096 x 32 | 10.240 us | 10.240 us | neutral |
+| 4096 x 64 | 11.264 us | **10.368 us** | V4 |
+| 8192 x 32 | 13.312 us | **10.240 us** | V4 |
+| 16384 x 128 | 32.672 us | **18.432 us** | V4 |
+
+### Final validation
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full repository suite: **250 passed**;
+- Python compileall: PASS;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors.
+
+V5 is dispatch-only, so ptxas resources are inherited:
+
+- V3: 23 registers/thread, 32 B shared/block, barrier resource used;
+- V4 packed: 30 registers/thread, 0 B shared/block, no block barrier.
+
+### Final boundary behavior
+
+| Shape | V5 time | Selected path |
+|---:|---:|---|
+| 2047 x 128 | 11.216 us | V3 |
+| 2048 x 128 | **10.592 us** | V4 |
+| 4095 x 32 | 10.432 us | V3 |
+| 4096 x 32 | **10.240 us** | V4 |
+| 4095 x 64 | 11.264 us | V3 |
+| 4096 x 64 | **10.496 us** | V4 |
+| 4096 x 128 | **10.912 us** | V4 |
+| 16384 x 128 | **18.528 us** | V4 |
+| 1024 x 512 | 12.288 us | V3 wide fallback |
+
+### Engineering note
+
+During final validation, the benchmark metadata initially reported `threads_per_block=256` for V5 fallback calls even though V3 actually launched 32/64/128 threads. Kernel execution was correct; the reporting layer was not. The benchmark metadata was fixed and the final CSV was regenerated.
+
+Raw artifacts:
+
+- `reports/data/softmax_v3_v4_crossover100_revalidate_rtx4090.csv`
+- `reports/data/softmax_v3_v4_v5_final100_revalidate_rtx4090.csv`
+- `reports/data/softmax_v5_compute_sanitizer.txt`
