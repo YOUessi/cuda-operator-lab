@@ -649,20 +649,18 @@ Warp shuffle is intentionally deferred to a later version so the value of basic 
 
 ## E08 — Softmax V1: one block per row + shared-memory reductions
 
-Status: **in progress**
+Status: **validated; ready to merge**
 
 ### Hypothesis
 
-Softmax V0 is dominated by serial work inside each row. Giving one CUDA block to each row should expose 256-way intra-row parallelism while preserving the same three mathematical stages.
+Softmax V0 is dominated by serial work inside each row. Giving one CUDA block to each row should expose 256-way intra-row parallelism while preserving the same max / exp-sum / normalize structure.
 
 ### Operation 1 — GitHub implementation
 
 V1 uses one 256-thread block per row.
 
-Each thread performs strided column work:
-
 ```text
-thread-local max
+thread-local max over strided columns
   -> shared[256]
   -> shared-memory max tree
   -> row max
@@ -676,26 +674,164 @@ parallel exp(x - row_max)
 parallel normalize
 ```
 
-This version intentionally uses a full shared-memory tree with `__syncthreads()` at every level. Warp shuffle is deferred so the gain from basic intra-row parallelism can be measured independently.
+The implementation intentionally keeps a full shared-memory tree and `__syncthreads()` at every level. Warp shuffle is deferred to V2.
 
 Added:
 
 - `cuda_operator_softmax_v1` C ABI;
 - Python binding;
-- V1 correctness tests including 255/256/257 and 511/512/513 widths;
+- correctness tests around 255/256/257 and 511/512/513 widths;
 - extreme-logit stability;
-- output reuse and current-stream checks;
-- `benchmarks/softmax_benchmark.py` comparing V0 / V1 / PyTorch.
+- output-reuse and active-stream tests;
+- `benchmarks/softmax_benchmark.py` for V0 / V1 / PyTorch.
 
-### Required hardware validation
+### Operation 2 — first clean hardware regression
 
-- clean CUDA 12.8 / SM 8.9 build;
-- complete repository regression suite;
-- wide-row numerical correctness;
-- V0 vs V1 benchmark over the same row × column matrix;
-- ptxas resource capture;
-- Compute Sanitizer on a non-power-of-two width;
-- derive the V2 bottleneck from measured V1 behavior.
+Tang fetched the GitHub branch and performed a clean CUDA 12.8 / SM 8.9 build.
+
+```text
+build: PASS
+full repository pytest: 153 passed
+```
+
+Ordinary correctness tests did not expose a synchronization bug that was found next by Racecheck.
+
+### Operation 3 — first Compute Sanitizer run found a real shared-memory race
+
+Representative shape: `[17, 513]`.
+
+`memcheck` was clean, but `racecheck` reported:
+
+```text
+1 displayed race error
+72 hazards
+```
+
+Root cause:
+
+1. all threads completed the max-reduction tree;
+2. each thread executed `row_max = shared[0]`;
+3. there was no block barrier after that read;
+4. faster warps could begin the denominator stage and overwrite `shared[0]` while slower warps were still reading the row max.
+
+This is exactly the type of bug that normal numerical tests can miss.
+
+### Operation 4 — GitHub-side race fix
+
+The fix was committed on GitHub:
+
+```cpp
+const float row_max = shared[0];
+__syncthreads();  // all warps finish reading shared[0]
+
+... reuse shared[] for denominator partial sums ...
+```
+
+Commit: `5c294da`.
+
+No local source edit was used.
+
+### Operation 5 — clean regression after the race fix
+
+Tang fetched the fixed branch and rebuilt from scratch.
+
+```text
+build: PASS
+full repository pytest: 153 passed
+```
+
+### Operation 6 — post-fix sanitizer validation
+
+CUDA 12.8 Compute Sanitizer, shape `[17, 513]`:
+
+```text
+memcheck:  0 errors
+racecheck: 0 hazards / 0 errors
+synccheck: 0 errors
+```
+
+Representative post-fix numerical observations:
+
+- max absolute error <= approximately `7.45e-9`;
+- max row-sum error <= approximately `1.79e-7`.
+
+Artifact:
+
+- `reports/data/softmax_v1_compute_sanitizer.txt`
+
+### Operation 7 — ptxas resource capture
+
+CUDA 12.8 / `sm_89`:
+
+```text
+V0:
+  registers/thread: 24
+  shared memory/block: 0 B
+  barriers: 0
+  spills: 0
+
+V1:
+  registers/thread: 21
+  shared memory/block: 1,024 B
+  barrier resource: used
+  spills: 0
+```
+
+Artifact:
+
+- `reports/data/softmax_v1_ptxas_sm89.txt`
+
+### Operation 8 — final V0 vs V1 benchmark
+
+Protocol:
+
+- CUDA events;
+- 10 warmups;
+- 50 timed repeats;
+- float32;
+- same input per shape.
+
+| Shape | V0 | V1 | V0 -> V1 | torch.softmax | V1 / torch |
+|---:|---:|---:|---:|---:|---:|
+| 1 x 128 | 17.408 us | 10.240 us | 1.70x | 9.536 us | 1.07x |
+| 32 x 128 | 38.912 us | 15.360 us | 2.53x | 8.320 us | 1.85x |
+| 128 x 128 | 56.352 us | **9.216 us** | 6.11x | 10.496 us | 0.88x |
+| 128 x 512 | 224.256 us | **11.264 us** | 19.91x | 10.240 us | 1.10x |
+| 128 x 1024 | 405.632 us | **11.264 us** | 36.01x | 8.832 us | 1.28x |
+| 128 x 4096 | 1,614.752 us | **14.336 us** | **112.64x** | 9.216 us | 1.56x |
+| 1024 x 128 | 57.344 us | 15.360 us | 3.73x | 9.216 us | 1.67x |
+| 1024 x 512 | 208.192 us | 17.296 us | 12.04x | 8.880 us | 1.95x |
+| 1024 x 4096 | 1,353.728 us | **37.888 us** | 35.73x | 36.960 us | **1.03x** |
+
+Raw artifact:
+
+- `reports/data/softmax_v0_v1_rtx4090_laptop.csv`
+
+### Interpretation
+
+The V0 hypothesis is decisively validated: intra-row parallelism removes almost all of the catastrophic width scaling.
+
+The `128 x 4096` case improves by more than **112x**, and `1024 x 4096` reaches within about **3%** of PyTorch.
+
+The remaining overhead is now concentrated in the block-level reduction machinery:
+
+- two full 256-thread shared-memory trees per row;
+- repeated `__syncthreads()` at each max-reduction level;
+- repeated `__syncthreads()` at each sum-reduction level;
+- 1,024 B shared memory per block.
+
+### Next action
+
+Softmax V2 should keep one block per row and keep the input/output passes unchanged, but replace the shared-memory trees with warp-shuffle reductions:
+
+```text
+thread-local max / sum
+  -> warp __shfl_down_sync
+  -> 8 warp partials in shared memory
+  -> first warp final reduction
+```
+
+This isolates synchronization/shared-memory reduction overhead before any vectorized input or shape dispatch work.
 
 ---
 
