@@ -294,3 +294,19 @@ Stable 100-repeat benchmark:
 - 128 x 512: 10.240 us -> 10.592 us (small regression).
 
 Conclusion: warp-level reduction meaningfully reduces coordination cost for high-row-count workloads, but fixed 256-thread blocks are not efficient for all widths. Next isolate width-aware block sizing.
+
+
+## Softmax V3 width-aware block sizing
+
+V3 tested whether reducing threads/block for narrow rows improves Softmax while holding the V2 warp-shuffle math constant.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **209 passed**;
+- memcheck/racecheck/synccheck clean for 128-thread and 256-thread representative paths;
+- ptxas unchanged from V2: 23 registers/thread, 32 B shared/block, 0 spills.
+
+Performance was not robustly positive. Stable runs showed neutral behavior at several widths, ~2% improvement at 1024 x 128, but regressions at 128 x 32 and 1024 x 64.
+
+Decision: record V3 as a valid negative experiment. Small-row optimization should preserve a full block and pack multiple rows across warps instead of shrinking each row's block.
