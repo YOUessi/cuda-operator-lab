@@ -485,3 +485,53 @@ Decision: **do not merge V4 yet**.
 Reason: microsecond-level timing around several crossover shapes remains sensitive to cache state, execution order, and GPU operating state. In one final cold-cache run, identical underlying kernels reached noticeably different timings depending on whether they were invoked directly as V3 or indirectly through the V4 dispatch path, which is too large to attribute to host dispatch alone.
 
 Next profiling step should control GPU clocks/power state where possible, use alternating randomized variant order, L2 eviction, repeated independent rounds, and report confidence intervals before freezing the final dispatcher.
+
+## RMSNorm V4 stable profiling harness and conservative profile
+
+The first dispatcher benchmark was rejected because variants were timed in long contiguous groups, which allowed GPU DVFS and thermal state to bias microsecond-scale comparisons.
+
+The profiling harness was upgraded to:
+
+- touch a 64 MiB CUDA buffer before every timed launch to perturb L2 state;
+- interleave V2, V3, and V4 at the **individual sample** level;
+- vary execution order across samples;
+- run multiple independent rounds;
+- repeat the entire profile with two independent seeds;
+- report median, mean, standard deviation, P10/P90, and coefficient of variation.
+
+Dispatcher acceptance uses **direct V2 vs direct V3 timings only**. V4 timings are not used to decide the policy because V4 can execute the exact same device kernel as V2 or V3, yet microsecond timing still reflects GPU operating-state noise.
+
+Acceptance gate:
+
+```text
+V3 is allowed only if:
+  speedup >= 1.05x
+  in every independent profiling run
+```
+
+Two independent interleaved runs produced only four accepted measured shapes:
+
+- 1024 x 512: V3 speedup 1.231x / 1.271x;
+- 512 x 4096: 1.170x / 1.181x;
+- 128 x 8192: 1.435x / 1.435x;
+- 512 x 8192: 1.051x / 1.051x.
+
+All other measured shapes fall back to V2.
+
+The current V4 policy is therefore intentionally a **strict measured whitelist** for the RTX 4090 Laptop profile, not a claimed universal rule.
+
+Validation after policy update:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **355 passed**;
+- third independent whitelist-validation seed preserved the accepted/rejected direction;
+- non-profiled shapes safely use V2.
+
+Artifacts:
+
+- `reports/data/rmsnorm_stable_profile_interleaved_rtx4090.csv`
+- `reports/data/rmsnorm_stable_profile_interleaved_seed2_rtx4090.csv`
+- `reports/data/rmsnorm_dispatch_profile_rtx4090.csv`
+- `reports/data/rmsnorm_v4_whitelist_validation_rtx4090.csv`
+
+Engineering conclusion: a profile-guided static dispatcher is defensible only when its policy is tied to measured hardware evidence. Unmeasured shapes should not inherit guessed thresholds.
