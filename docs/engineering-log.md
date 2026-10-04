@@ -569,3 +569,38 @@ Representative performance versus PyTorch `layer_norm`:
 - 1024 x 4096: 1086.416 us vs 24.576 us (~44.2x slower).
 
 Conclusion: the serial mean + serial variance + serial affine passes are the dominant bottleneck. V1 should parallelize hidden-width work inside each row while keeping scalar IO and a simple shared-memory reduction.
+
+## LayerNorm V1 block-parallel shared-memory reductions
+
+V1 changes the execution layout from one serial thread per row to one 256-thread block per row.
+
+Each row performs:
+
+1. thread-local strided sum;
+2. 256-entry shared-memory tree reduction for mean;
+3. all threads load the final mean;
+4. a synchronization barrier protects shared-buffer reuse;
+5. thread-local squared-deviation accumulation;
+6. second shared-memory tree reduction for variance;
+7. parallel affine output.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **396 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 21 registers/thread, 1,024 B shared memory/block, 0 spills.
+
+Representative V0 -> V1:
+
+- 128 x 512: 189.408 us -> 10.560 us (~17.9x);
+- 128 x 1024: 355.088 us -> 11.264 us (~31.5x);
+- 128 x 4096: 1316.896 us -> 14.384 us (~91.6x);
+- 128 x 8192: 2162.784 us -> 20.144 us (~107.4x);
+- 1024 x 4096: 1084.416 us -> 34.736 us (~31.2x).
+
+The 128 x 512 result is effectively equal to the PyTorch LayerNorm reference in this run. Wider/high-row cases still leave 10–40% headroom.
+
+Next: replace both full shared-memory trees with warp-shuffle reductions while keeping scalar IO and the two-pass mean/variance structure unchanged.
