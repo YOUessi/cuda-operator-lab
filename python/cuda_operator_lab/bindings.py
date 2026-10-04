@@ -50,6 +50,7 @@ class _Library:
             "cuda_operator_softmax_v0",
             "cuda_operator_softmax_v1",
             "cuda_operator_softmax_v2",
+            "cuda_operator_softmax_v3",
         ):
             function = getattr(self.handle, name)
             function.argtypes = [
@@ -262,3 +263,14 @@ def softmax_v2(x: torch.Tensor) -> torch.Tensor:
     """Return row-wise Softmax V2 output."""
     out = torch.empty_like(x)
     return softmax_v2_into(x, out)
+
+
+def softmax_v3_into(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """Launch V3: warp-shuffle Softmax with width-aware block size."""
+    return _softmax_into("cuda_operator_softmax_v3", x, out)
+
+
+def softmax_v3(x: torch.Tensor) -> torch.Tensor:
+    """Return row-wise Softmax V3 output."""
+    out = torch.empty_like(x)
+    return softmax_v3_into(x, out)
