@@ -396,3 +396,30 @@ Performance exposes a serial hidden-width bottleneck:
 - 128 x 8192: 1,691.936 us.
 
 Next: one-block-per-row cooperative sum-of-squares reduction.
+
+
+## RMSNorm V1 block-parallel reduction
+
+V1 moves from one serial thread per row to one 256-thread block per row.
+
+Each thread accumulates a strided local sum of squares, the block combines those partials in a 256-float shared-memory tree, thread 0 computes inverse RMS, and all threads write normalized weighted output in parallel.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **290 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors;
+- ptxas: 18 registers/thread, 1,024 B shared memory/block, 0 spills.
+
+Representative V0 -> V1 speedups:
+
+- 128 x 512: 144.560 us -> 10.272 us (~14.1x);
+- 128 x 1024: 279.552 us -> 10.464 us (~26.7x);
+- 128 x 4096: 1,037.120 us -> 14.080 us (~73.7x);
+- 128 x 8192: 1,692.320 us -> 17.408 us (~97.2x).
+
+The PyTorch comparison in this phase is a multi-op correctness expression, not an optimized fused RMSNorm kernel, so its latency is retained for context only.
+
+Next: replace the shared-memory tree with warp shuffle while holding the rest of the kernel constant.

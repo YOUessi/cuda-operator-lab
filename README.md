@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: RMSNorm V0
+## Current milestone: RMSNorm V1
 
 Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
 
@@ -290,3 +290,33 @@ Representative timings:
 | 128 x 8192 | 1,691.936 us | 26.624 us |
 
 The hidden-width bottleneck is intentionally exposed. Next: block-parallel RMSNorm V1.
+
+
+### RMSNorm V1 block-parallel result
+
+V1 changes only intra-row execution:
+
+```text
+one 256-thread block per row
+  -> strided local sum(x^2)
+  -> shared-memory reduction
+  -> inverse RMS
+  -> parallel normalize * weight
+```
+
+RTX 4090 validation:
+
+- full repository suite: **290 passed**;
+- memcheck / racecheck / synccheck: clean;
+- ptxas: 18 registers/thread, 1,024 B shared memory/block, 0 spills.
+
+Representative V0 -> V1:
+
+| Shape | V0 | V1 |
+|---:|---:|---:|
+| 128 x 512 | 144.560 us | **10.272 us** |
+| 128 x 1024 | 279.552 us | **10.464 us** |
+| 128 x 4096 | 1,037.120 us | **14.080 us** |
+| 128 x 8192 | 1,692.320 us | **17.408 us** |
+
+Next: RMSNorm V2 warp-shuffle reduction. The PyTorch expression shown in raw benchmarks is a multi-op correctness reference, not an optimized fused vendor RMSNorm baseline.

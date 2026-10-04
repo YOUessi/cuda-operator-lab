@@ -2027,3 +2027,151 @@ one block per row
 This mirrors the project's profile-guided discipline: isolate intra-row parallelism first, then measure the remaining coordination cost.
 
 Status: **validated; ready to merge**.
+
+
+---
+
+## E14 — RMSNorm V1: one block per row + shared-memory sum-of-squares reduction
+
+Status: **in progress**
+
+### Hypothesis
+
+RMSNorm V0 is row-parallel but hidden-width serial. The first isolated optimization is to parallelize only the per-row hidden dimension.
+
+### Scope lock
+
+V1 will keep:
+
+- float32 input / weight / output;
+- same RMSNorm math and epsilon;
+- one row as the unit of normalization;
+- scalar loads/stores;
+- no warp shuffle;
+- no vectorized IO;
+- no shape dispatch.
+
+V1 changes only the row execution layout:
+
+```text
+one 256-thread block per row
+  -> thread-local sum(x^2) over strided columns
+  -> shared-memory tree sum
+  -> inverse RMS
+  -> parallel x * inverse_rms * weight
+```
+
+Planned evidence:
+
+- clean build and full pytest;
+- V0/V1/PyTorch benchmark;
+- memcheck / racecheck / synccheck;
+- ptxas resource capture;
+- raw results and all issues recorded before merge.
+
+
+### Operation 2 — clean Tang build and regression
+
+Tang fetched the GitHub implementation and rebuilt from scratch.
+
+```text
+CUDA 12.8 / sm_89 build: PASS
+full repository pytest: 290 passed
+```
+
+### Operation 3 — V0/V1 benchmark
+
+Protocol:
+
+- CUDA events;
+- 10 warmups;
+- 50 timed repeats;
+- float32;
+- eps = 1e-5;
+- same input / weight for both variants and the PyTorch expression reference.
+
+Representative results:
+
+| Shape | V0 | V1 | V0 -> V1 | PyTorch expression |
+|---:|---:|---:|---:|---:|
+| 128 x 128 | 41.424 us | **11.264 us** | 3.68x | 24.912 us |
+| 128 x 512 | 144.560 us | **10.272 us** | 14.07x | 24.576 us |
+| 128 x 1024 | 279.552 us | **10.464 us** | 26.72x | 24.480 us |
+| 128 x 4096 | 1,037.120 us | **14.080 us** | **73.66x** | 27.456 us |
+| 1024 x 4096 | 868.352 us | **27.440 us** | 31.65x | 62.144 us |
+| 128 x 8192 | 1,692.320 us | **17.408 us** | **97.22x** | 26.624 us |
+
+Important interpretation note:
+
+The repository's PyTorch RMSNorm reference is intentionally expressed as separate PyTorch operations:
+
+```python
+x * torch.rsqrt(x.square().mean(dim=-1, keepdim=True) + eps) * weight
+```
+
+It is a trusted correctness reference, **not an optimized fused vendor RMSNorm kernel**. Therefore V1 being faster than that reference must not be presented as outperforming an optimized framework/vendor RMSNorm implementation.
+
+Artifact:
+
+- `reports/data/rmsnorm_v0_v1_rtx4090_laptop.csv`
+
+### Operation 4 — ptxas resource capture
+
+CUDA 12.8 / SM 8.9:
+
+```text
+V0:
+  registers/thread: 20
+  shared memory/block: 0 B
+  barriers: 0
+  spills: 0
+
+V1:
+  registers/thread: 18
+  shared memory/block: 1,024 B
+  barrier resource: used
+  spills: 0
+```
+
+Artifact:
+
+- `reports/data/rmsnorm_v1_ptxas_sm89.txt`
+
+### Operation 5 — Compute Sanitizer
+
+Representative non-power-of-two hidden size: `17 x 4097`.
+
+```text
+memcheck:  0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+Artifact:
+
+- `reports/data/rmsnorm_v1_compute_sanitizer.txt`
+
+### V1 conclusion
+
+The V0 hidden-width bottleneck is decisively removed by intra-row block parallelism.
+
+The remaining explicit coordination cost is now the 256-entry shared-memory tree:
+
+```text
+256 partial square sums
+  -> 128
+  -> 64
+  -> 32
+  -> ...
+  -> 1
+```
+
+with a block barrier at each reduction stage.
+
+### Next action
+
+RMSNorm V2 should keep one block per row and all scalar input/output passes unchanged, but replace the full shared-memory reduction tree with a two-level warp-shuffle sum reduction.
+
+This will isolate reduction coordination overhead before any float4/vectorized IO experiment.
+
+Status: **validated; ready to merge**.

@@ -92,3 +92,65 @@ Raw artifacts:
 - `reports/data/rmsnorm_v0_rtx4090_laptop.csv`
 - `reports/data/rmsnorm_v0_ptxas_sm89.txt`
 - `reports/data/rmsnorm_v0_compute_sanitizer.txt`
+
+
+---
+
+## V1 — one block per row with shared-memory sum reduction
+
+### Algorithm
+
+V1 assigns one 256-thread block to each row.
+
+```text
+thread-local sum(x^2) over strided columns
+  -> shared[256]
+  -> shared-memory tree sum
+  -> inverse RMS
+  -> parallel x * inverse_rms * weight
+```
+
+No warp shuffle, vectorized loads, or shape dispatch are used.
+
+### Correctness and safety
+
+- full repository suite: **290 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors.
+
+### Resource usage
+
+| Variant | Registers/thread | Shared memory/block | Spills |
+|---|---:|---:|---:|
+| V0 | 20 | 0 B | 0 |
+| V1 | 18 | 1,024 B | 0 |
+
+### Performance
+
+10 warmups + 50 timed repeats:
+
+| Shape | V0 (us) | V1 (us) | V0 -> V1 |
+|---:|---:|---:|---:|
+| 128 x 128 | 41.424 | **11.264** | 3.68x |
+| 128 x 512 | 144.560 | **10.272** | 14.07x |
+| 128 x 1024 | 279.552 | **10.464** | 26.72x |
+| 128 x 4096 | 1,037.120 | **14.080** | **73.66x** |
+| 1024 x 4096 | 868.352 | **27.440** | 31.65x |
+| 128 x 8192 | 1,692.320 | **17.408** | **97.22x** |
+
+The benchmark also records the PyTorch expression reference, but that reference is composed from separate PyTorch operators and is not an optimized fused RMSNorm kernel. It is therefore a correctness/context reference, not a vendor-performance baseline.
+
+### Interpretation
+
+The serial hidden-width bottleneck disappears. The next isolated cost is the full shared-memory reduction tree and its repeated block synchronizations.
+
+### V2 hypothesis
+
+Keep the one-block-per-row traversal and scalar IO unchanged, and replace only the shared-memory tree with warp-shuffle reduction plus one shared partial per warp.
+
+Raw artifacts:
+
+- `reports/data/rmsnorm_v0_v1_rtx4090_laptop.csv`
+- `reports/data/rmsnorm_v1_ptxas_sm89.txt`
+- `reports/data/rmsnorm_v1_compute_sanitizer.txt`

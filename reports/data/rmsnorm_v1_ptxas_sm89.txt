@@ -1,0 +1,18 @@
+CUDA 12.8 / sm_89 / rmsnorm.cu / -Xptxas=-v
+
+rmsnorm_v1_block_row_kernel:
+  stack frame: 0 bytes
+  spill stores: 0 bytes
+  spill loads: 0 bytes
+  registers: 18
+  shared memory: 1024 bytes
+  barrier resource: used
+  constant memory[0]: 396 bytes
+
+rmsnorm_v0_serial_row_kernel:
+  stack frame: 0 bytes
+  spill stores: 0 bytes
+  spill loads: 0 bytes
+  registers: 20
+  shared memory: 0 bytes
+  barriers: 0
