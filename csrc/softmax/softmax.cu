@@ -1,5 +1,6 @@
 #include "softmax.cuh"
 
+#include <cfloat>
 #include <cstdint>
 
 #include <cuda_runtime.h>
@@ -22,7 +23,7 @@ __global__ void softmax_v0_serial_row_kernel(
   const float* row_input = input + row * cols;
   float* row_output = output + row * cols;
 
-  float row_max = -CUDART_INF_F;
+  float row_max = -FLT_MAX;
   for (std::uint64_t col = 0; col < cols; ++col) {
     row_max = fmaxf(row_max, row_input[col]);
   }
