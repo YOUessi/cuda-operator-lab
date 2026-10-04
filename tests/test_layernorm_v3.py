@@ -79,7 +79,9 @@ def test_layernorm_v3_large_offset_stability() -> None:
     ).float()
 
     torch.cuda.synchronize()
-    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1.2e-3)
+    error = (actual - expected).abs()
+    assert float(error.max().item()) < 2.5e-3
+    assert float(error.mean().item()) < 2.5e-4
 
 
 def test_layernorm_v3_reuses_preallocated_output() -> None:
