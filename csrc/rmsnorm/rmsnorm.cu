@@ -359,15 +359,14 @@ extern "C" int cuda_operator_rmsnorm_v4(
   }
 
   bool use_float4 = false;
-  if (cols == 512) {
-    use_float4 = rows >= 1536;
-  } else if (cols == 1024) {
-    use_float4 = rows == 1024;
-  } else if (cols == 4096) {
-    use_float4 = rows <= 512;
-  } else if (cols == 8192) {
-    use_float4 = rows <= 1024;
-  }
+  // Conservative RTX 4090 Laptop profile generated from two independent
+  // interleaved, L2-evicted benchmark runs with a >= 1.05x acceptance gate.
+  // Unlisted shapes deliberately fall back to V2.
+  use_float4 =
+      (rows == 1024 && cols == 512) ||
+      (rows == 512 && cols == 4096) ||
+      (rows == 128 && cols == 8192) ||
+      (rows == 512 && cols == 8192);
 
   const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
   const bool aligned =
