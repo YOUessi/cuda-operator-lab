@@ -2175,3 +2175,39 @@ RMSNorm V2 should keep one block per row and all scalar input/output passes unch
 This will isolate reduction coordination overhead before any float4/vectorized IO experiment.
 
 Status: **validated; ready to merge**.
+
+
+---
+
+## E15 — RMSNorm V2: warp-shuffle sum-of-squares reduction
+
+Status: **in progress**
+
+### Hypothesis
+
+RMSNorm V1 removes the serial hidden-width bottleneck, leaving the full 256-thread shared-memory tree as the next isolated coordination cost.
+
+### Scope lock
+
+V2 keeps:
+
+- one 256-thread block per row;
+- scalar input / weight / output access;
+- thread-local strided sum of squares;
+- identical RMSNorm math and epsilon;
+- no vectorized IO;
+- no shape dispatch.
+
+Only the block reduction changes:
+
+```text
+V1:
+256 shared partials + repeated __syncthreads()
+
+V2:
+warp shuffle within 8 warps
+  -> 8 shared warp sums
+  -> first warp final shuffle
+```
+
+The experiment will measure whether the coordination reduction matters after V1.
