@@ -22,7 +22,7 @@ The repository keeps meaningful intermediate kernels instead of publishing only 
 - GEMM
 - Fused Residual + RMSNorm
 
-## Current milestone: Softmax V2
+## Current milestone: Softmax V3
 
 Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
 
@@ -177,6 +177,20 @@ Stable 100-repeat results:
 
 The win is shape-dependent; 128 x 512 slightly regresses. That points to the next experiment: width-aware thread-count dispatch rather than assuming 256 threads per row is optimal.
 
+### Softmax V3 width-aware experiment
+
+V3 tested 32 / 64 / 128 / 256-thread blocks according to row width while keeping V2's warp-shuffle reductions unchanged.
+
+Hardware validation:
+
+- **209 tests passed**;
+- memcheck / racecheck / synccheck clean;
+- same ptxas footprint as V2: 23 registers/thread, 32 B shared memory/block.
+
+The result is intentionally retained as a negative/shape-sensitive experiment. Stable measurements showed no universal gain and regressions at some narrow shapes (for example 1024 x 64).
+
+This redirects the small-row design toward **one warp per row, multiple rows per 256-thread block**, rather than shrinking one row's block.
+
 ## Quick start
 
 ```bash
@@ -185,7 +199,7 @@ The win is shape-dependent; 128 x 512 slightly regresses. That points to the nex
 
 PYTHONPATH=$PWD/python \
 python3 benchmarks/softmax_benchmark.py \
-  --variants v1_block_shared v2_warp_shuffle
+  --variants v2_warp_shuffle v3_width_aware
 ```
 
 ## Local target
