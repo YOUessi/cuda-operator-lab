@@ -1,0 +1,18 @@
+CUDA 12.8, sm_89, softmax.cu, -Xptxas=-v
+
+softmax_v1_block_row_kernel:
+  stack frame: 0 bytes
+  spill stores: 0 bytes
+  spill loads: 0 bytes
+  registers: 21
+  barrier resource: used
+  shared memory: 1024 bytes
+  constant memory[0]: 384 bytes
+
+softmax_v0_serial_row_kernel:
+  stack frame: 0 bytes
+  spill stores: 0 bytes
+  spill loads: 0 bytes
+  registers: 24
+  barrier resource: 0
+  shared memory: 0 bytes
