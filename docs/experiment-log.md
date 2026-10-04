@@ -2664,3 +2664,77 @@ Artifacts:
 ### Next action
 
 V2 keeps the two-pass mean/variance algorithm and scalar IO, but replaces both 256-entry shared-memory trees with two-level warp-shuffle reductions. This isolates synchronization/reduction overhead before introducing Welford or vectorized IO.
+
+## E20 — LayerNorm V2: warp-shuffle mean/variance reductions
+
+Status: **validated; ready to merge**
+
+### Scope lock
+
+V2 keeps:
+
+- one 256-thread block per row;
+- scalar input / weight / bias / output access;
+- separate mean and variance passes;
+- identical LayerNorm math and epsilon.
+
+Only reduction coordination changes:
+
+```text
+V1:
+256 shared partials + repeated block barriers
+
+V2:
+warp-local shuffle
+  -> 8 shared warp partials
+  -> first-warp final shuffle
+```
+
+The barrier protecting shared-buffer reuse after all threads consume the mean is retained.
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 419 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+ptxas:
+
+```text
+V1:
+  21 registers/thread
+  1024 B shared memory/block
+
+V2:
+  23 registers/thread
+  32 B shared memory/block
+  0 spills
+```
+
+Selected timings:
+
+| Shape | V1 | V2 | PyTorch |
+|---:|---:|---:|---:|
+| 128 x 512 | 10.528 us | 10.272 us | 10.240 us |
+| 128 x 1024 | 11.264 us | 10.944 us | 10.240 us |
+| 1024 x 128 | 14.336 us | 11.264 us | 11.008 us |
+| 1024 x 512 | 15.360 us | 12.288 us | 11.264 us |
+| 1024 x 4096 | 34.816 us | 31.856 us | 25.248 us |
+| 128 x 8192 | 19.712 us | 19.360 us | 15.360 us |
+
+Artifacts:
+
+- `reports/data/layernorm_v0_v1_v2_rtx4090.csv`
+- `reports/data/layernorm_v2_ptxas_sm89.txt`
+
+### Interpretation
+
+Warp shuffle materially helps high-row-count workloads and nearly closes the gap on several small/medium shapes. The wide-row cases retain noticeable headroom, but their reduction-tree cost is now small relative to reading data and computing both statistics.
+
+### Next action
+
+LayerNorm V3 should test Welford online statistics so mean and variance can be accumulated together in one numerically stable pass before considering float4/vectorized IO.
