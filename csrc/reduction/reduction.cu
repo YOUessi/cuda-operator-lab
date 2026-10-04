@@ -165,9 +165,9 @@ int validate_reduction_arguments(
   return static_cast<int>(cudaSuccess);
 }
 
-int reduction_block_count(std::uint64_t n) {
+int reduction_block_count_for_work_items(std::uint64_t work_items) {
   const std::uint64_t required_blocks =
-      (n + kReductionThreads - 1) / kReductionThreads;
+      (work_items + kReductionThreads - 1) / kReductionThreads;
   const std::uint64_t capped_blocks =
       required_blocks < static_cast<std::uint64_t>(kReductionMaxBlocks)
           ? required_blocks
@@ -218,7 +218,7 @@ extern "C" int cuda_operator_reduction_v1(
   }
 
   reduction_v1_parallel_atomic_kernel<<<
-      reduction_block_count(n),
+      reduction_block_count_for_work_items(n),
       kReductionThreads,
       0,
       cuda_stream>>>(input, output, n);
@@ -242,7 +242,7 @@ extern "C" int cuda_operator_reduction_v2(
   }
 
   reduction_v2_shared_memory_kernel<<<
-      reduction_block_count(n),
+      reduction_block_count_for_work_items(n),
       kReductionThreads,
       0,
       cuda_stream>>>(input, output, n);
@@ -266,7 +266,7 @@ extern "C" int cuda_operator_reduction_v3(
   }
 
   reduction_v3_warp_shuffle_kernel<<<
-      reduction_block_count(n),
+      reduction_block_count_for_work_items(n),
       kReductionThreads,
       0,
       cuda_stream>>>(input, output, n);
@@ -291,7 +291,7 @@ extern "C" int cuda_operator_reduction_v4(
 
   if (is_float4_aligned(input)) {
     reduction_v4_float4_kernel<<<
-        reduction_block_count(n),
+        reduction_block_count_for_work_items(n),
         kReductionThreads,
         0,
         cuda_stream>>>(input, output, n);
@@ -300,7 +300,42 @@ extern "C" int cuda_operator_reduction_v4(
     // back keeps the public API correct rather than issuing a misaligned
     // 16-byte float4 load.
     reduction_v3_warp_shuffle_kernel<<<
-        reduction_block_count(n),
+        reduction_block_count_for_work_items(n),
+        kReductionThreads,
+        0,
+        cuda_stream>>>(input, output, n);
+  }
+  return static_cast<int>(cudaGetLastError());
+}
+
+extern "C" int cuda_operator_reduction_v5(
+    const float* input,
+    float* output,
+    std::uint64_t n,
+    void* stream) {
+  const int validation = validate_reduction_arguments(input, output, n);
+  if (validation != static_cast<int>(cudaSuccess)) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  const cudaError_t status = reset_output(output, cuda_stream);
+  if (status != cudaSuccess || n == 0) {
+    return static_cast<int>(status);
+  }
+
+  const std::uint64_t vector_count = n / 4;
+  if (is_float4_aligned(input) && vector_count != 0) {
+    // V5 isolates launch geometry: the kernel body is exactly the V4 float4
+    // kernel, but the grid is sized from the actual vector work-item count.
+    reduction_v4_float4_kernel<<<
+        reduction_block_count_for_work_items(vector_count),
+        kReductionThreads,
+        0,
+        cuda_stream>>>(input, output, n);
+  } else {
+    reduction_v3_warp_shuffle_kernel<<<
+        reduction_block_count_for_work_items(n),
         kReductionThreads,
         0,
         cuda_stream>>>(input, output, n);
