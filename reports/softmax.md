@@ -259,3 +259,57 @@ Raw artifacts:
 - `reports/data/softmax_v1_v2_100_rtx4090_laptop.csv`
 - `reports/data/softmax_v2_ptxas_sm89.txt`
 - `reports/data/softmax_v2_compute_sanitizer.txt`
+
+
+---
+
+## V3 — width-aware block sizing
+
+### Change
+
+V3 keeps V2's one-block-per-row and warp-shuffle reduction algorithm but selects fewer threads for narrow rows:
+
+```text
+cols <= 32   -> 32 threads
+cols <= 64   -> 64 threads
+cols <= 128  -> 128 threads
+otherwise    -> 256 threads
+```
+
+Dynamic reduction helpers use the actual launched warp count.
+
+### Validation
+
+- clean build: PASS;
+- full repository suite: **209 passed**;
+- narrow-path memcheck/racecheck/synccheck: clean;
+- wide-path memcheck/racecheck/synccheck: clean;
+- ptxas: 23 registers/thread, 32 B shared/block, 0 spills.
+
+### Performance result
+
+The result is mixed rather than monotonically positive.
+
+Stable 100-repeat examples:
+
+| Shape | V2 | V3 | Result |
+|---:|---:|---:|---|
+| 128 x 32 | **10.240 us** | 10.864 us | V3 regression |
+| 128 x 64 | 10.240 us | 10.240 us | neutral |
+| 128 x 128 | 10.240 us | 10.240 us | neutral |
+| 1024 x 32 | 10.240 us | 10.240 us | neutral |
+| 1024 x 64 | **10.240 us** | 10.992 us | V3 regression |
+| 1024 x 128 | 10.464 us | **10.272 us** | ~1.02x |
+
+### Interpretation
+
+Reducing thread count removes idle column workers but also reduces the number of active warps in each one-row block. The stable data does not support using simple width-aware block shrinkage as the default strategy.
+
+The stronger next design is to keep 256 threads/block while packing multiple small rows into the block, one row per warp.
+
+Raw artifacts:
+
+- `reports/data/softmax_v2_v3_boundaries_50_rtx4090_laptop.csv`
+- `reports/data/softmax_v2_v3_100_rtx4090_laptop.csv`
+- `reports/data/softmax_v3_ptxas_sm89.txt`
+- `reports/data/softmax_v3_compute_sanitizer.txt`
