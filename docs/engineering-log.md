@@ -226,3 +226,42 @@ Representative results:
 - 128 × 4096: 1,595.392 us vs PyTorch 9.328 us.
 
 The next isolated change is one-block-per-row intra-row parallelism with shared-memory max and sum reductions.
+
+
+## Softmax V1 block-parallel shared-memory reduction
+
+### Design
+
+V1 moves from one thread per row to one 256-thread block per row. Threads use strided column access and shared-memory tree reductions for both row max and denominator sum.
+
+### Concurrency bug caught only by Racecheck
+
+The first clean build and ordinary pytest suite passed (153 tests), but Compute Sanitizer Racecheck reported a shared-memory race: `shared[0]` was reused for denominator partial sums before all warps were guaranteed to have read the row maximum.
+
+Fix: add a block barrier immediately after loading `row_max = shared[0]`.
+
+After the GitHub-side fix and a clean Tang rebuild:
+
+- full suite: **153 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors;
+- synccheck: 0 errors.
+
+This is a concrete example where deterministic unit tests were insufficient for GPU synchronization correctness.
+
+### Resources and performance
+
+ptxas:
+
+- 21 registers/thread;
+- 1,024 B shared memory/block;
+- 0 spills.
+
+Representative speedups:
+
+- 128 x 512: 224.256 us -> 11.264 us;
+- 128 x 1024: 405.632 us -> 11.264 us;
+- 128 x 4096: 1,614.752 us -> 14.336 us;
+- 1024 x 4096: 1,353.728 us -> 37.888 us, versus PyTorch 36.960 us.
+
+Next: replace the two full shared-memory trees with warp-shuffle reductions while holding the rest of Softmax constant.

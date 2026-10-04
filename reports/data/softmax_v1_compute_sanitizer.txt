@@ -1,0 +1,29 @@
+Compute Sanitizer 2025.1.0.0 (CUDA 12.8 package)
+
+Representative Softmax V1 input:
+  shape: [17, 513]
+  dtype: float32
+
+First racecheck before the shared-memory reuse fix:
+  hazard: shared[0] could be read as row_max by one warp while thread 0
+  began overwriting shared[0] for the denominator reduction.
+  racecheck reported 1 displayed error / 72 hazards.
+
+Fix:
+  add __syncthreads() after every thread loads row_max from shared[0]
+  and before shared[] is reused for denominator partial sums.
+
+After the GitHub fix and clean rebuild:
+
+memcheck:
+  ERROR SUMMARY: 0 errors
+
+racecheck:
+  RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+synccheck:
+  ERROR SUMMARY: 0 errors
+
+Representative post-fix numerical observation:
+  max_abs_error <= 7.45e-9
+  max_row_sum_error <= 1.79e-7
