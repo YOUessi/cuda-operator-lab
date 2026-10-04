@@ -2942,3 +2942,113 @@ Artifacts:
 - `reports/data/layernorm_stable_profile_seed2_rtx4090.csv`
 - `reports/data/layernorm_stable_profile_extra_20261007_rtx4090.csv`
 - `reports/data/layernorm_stable_profile_extra_20261008_rtx4090.csv`
+
+## E23 — LayerNorm V5: profile-guided V2/V4 dispatcher
+
+Status: **validated; final LayerNorm policy**
+
+### Profile generation
+
+Added:
+
+`benchmarks/generate_layernorm_dispatch_profile.py`
+
+Inputs are stable profiling CSVs from independent seeds. A shape is accepted for V4 only when:
+
+```text
+number of independent runs >= 2
+AND
+V2 / V4 speedup >= 1.05
+in every run
+```
+
+Generated accepted shapes:
+
+```text
+128 x 4096
+256 x 4096
+512 x 4096
+
+128 x 8192
+256 x 8192
+512 x 8192
+
+1024 x 512
+1536 x 512
+1536 x 1024
+```
+
+Examples rejected:
+
+```text
+1024 x 4096: ~1.02x only
+2048 x 4096: ~1.00x
+1024 x 1024: one run below 1.05x
+2048 x 512: one run near 1.00x
+2048 x 1024: V4 regresses
+```
+
+### Implementation
+
+V5 contains no new kernel body.
+
+For accepted aligned shapes:
+
+```text
+V5 -> V4 float4 kernel
+```
+
+Otherwise:
+
+```text
+V5 -> V2 scalar warp-shuffle kernel
+```
+
+Unaligned pointers also fall back to V2.
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 484 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+Final interleaved cold-cache benchmark:
+
+| Shape | V2 | V4 | V5 | V5 path |
+|---:|---:|---:|---:|---|
+| 128 x 4096 | 24.384 | 17.104 | 17.344 | V4 |
+| 256 x 4096 | 29.696 | 23.552 | 23.552 | V4 |
+| 512 x 4096 | 51.200 | 45.056 | 44.288 | V4 |
+| 1024 x 4096 | 79.968 | 82.480 | 79.872 | V2 |
+| 128 x 8192 | 37.888 | 26.016 | 25.904 | V4 |
+| 512 x 8192 | 95.232 | 83.968 | 82.912 | V4 |
+| 1024 x 8192 | 156.672 | 146.368 | 155.824 | V2 |
+| 1024 x 512 | 18.432 | 16.544 | 17.056 | V4 |
+| 1536 x 512 | 21.264 | 19.696 | 19.456 | V4 |
+| 2048 x 512 | 24.576 | 23.520 | 24.592 | V2 |
+| 1536 x 1024 | 34.032 | 31.744 | 31.728 | V4 |
+| 2048 x 1024 | 42.304 | 43.824 | 41.920 | V2 |
+
+Artifacts:
+
+- `reports/data/layernorm_dispatch_profile_rtx4090.csv`
+- `reports/data/layernorm_v5_final_cold_rtx4090.csv`
+
+### LayerNorm conclusion
+
+The final LayerNorm sequence is:
+
+```text
+V0 serial row
+-> V1 block-parallel shared reductions
+-> V2 warp-shuffle reductions
+-> V3 Welford numerical-method experiment
+-> V4 float4 memory fast path
+-> V5 profile-guided dispatch
+```
+
+The central result is not a single "best kernel" but a measured optimization process: each change is isolated, validated, profiled under cache-aware methodology, and promoted only when repeated evidence supports it.
