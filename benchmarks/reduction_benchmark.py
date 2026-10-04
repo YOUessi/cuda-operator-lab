@@ -17,6 +17,7 @@ from cuda_operator_lab.bindings import (
     reduction_v2_into,
     reduction_v3_into,
     reduction_v4_into,
+    reduction_v5_into,
 )
 from cuda_operator_lab.references import reduction_sum
 
@@ -31,6 +32,7 @@ VARIANTS: dict[str, ReductionFn] = {
     "v2_shared_memory": reduction_v2_into,
     "v3_warp_shuffle": reduction_v3_into,
     "v4_float4": reduction_v4_into,
+    "v5_shape_aware_float4": reduction_v5_into,
 }
 
 
