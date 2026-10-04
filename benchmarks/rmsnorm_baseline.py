@@ -10,7 +10,11 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import rmsnorm_v0_into, rmsnorm_v1_into
+from cuda_operator_lab.bindings import (
+    rmsnorm_v0_into,
+    rmsnorm_v1_into,
+    rmsnorm_v2_into,
+)
 from cuda_operator_lab.references import rmsnorm
 
 
@@ -64,6 +68,7 @@ def main() -> None:
     variants = [
         ("v0_serial_row", rmsnorm_v0_into),
         ("v1_block_shared", rmsnorm_v1_into),
+        ("v2_warp_shuffle", rmsnorm_v2_into),
     ]
     rows_out: list[dict[str, object]] = []
     print(f"device={torch.cuda.get_device_name(0)}")
