@@ -10,6 +10,7 @@ constexpr int kLayerNormV0Threads = 128;
 constexpr int kLayerNormV1Threads = 256;
 constexpr int kLayerNormV2Threads = 256;
 constexpr int kLayerNormV3Threads = 256;
+constexpr int kLayerNormV4Threads = 256;
 constexpr int kWarpSize = 32;
 constexpr int kWarpsPerBlock = kLayerNormV2Threads / kWarpSize;
 constexpr unsigned int kFullWarpMask = 0xffffffffU;
@@ -321,6 +322,92 @@ __global__ void layernorm_v3_welford_row_kernel(
   }
 }
 
+__global__ void layernorm_v4_float4_row_kernel(
+    const float4* input4,
+    const float4* weight4,
+    const float4* bias4,
+    float4* output4,
+    std::uint64_t rows,
+    std::uint64_t vec_cols,
+    std::uint64_t cols,
+    float eps) {
+  __shared__ float warp_sums[kWarpsPerBlock];
+
+  const std::uint64_t row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+
+  const unsigned int tid = threadIdx.x;
+  const int lane = tid & (kWarpSize - 1);
+  const int warp_id = tid / kWarpSize;
+  const float4* row_input4 = input4 + row * vec_cols;
+  float4* row_output4 = output4 + row * vec_cols;
+
+  float local_sum = 0.0F;
+  for (std::uint64_t col4 = tid; col4 < vec_cols; col4 += blockDim.x) {
+    const float4 v = row_input4[col4];
+    local_sum += v.x + v.y + v.z + v.w;
+  }
+
+  local_sum = warp_reduce_sum(local_sum);
+  if (lane == 0) {
+    warp_sums[warp_id] = local_sum;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    float block_sum = lane < kWarpsPerBlock ? warp_sums[lane] : 0.0F;
+    block_sum = warp_reduce_sum(block_sum);
+    if (lane == 0) {
+      warp_sums[0] = block_sum / static_cast<float>(cols);
+    }
+  }
+  __syncthreads();
+
+  const float mean = warp_sums[0];
+  __syncthreads();
+
+  float local_squared_deviation = 0.0F;
+  for (std::uint64_t col4 = tid; col4 < vec_cols; col4 += blockDim.x) {
+    const float4 v = row_input4[col4];
+    const float dx = v.x - mean;
+    const float dy = v.y - mean;
+    const float dz = v.z - mean;
+    const float dw = v.w - mean;
+    local_squared_deviation += dx * dx + dy * dy + dz * dz + dw * dw;
+  }
+
+  local_squared_deviation = warp_reduce_sum(local_squared_deviation);
+  if (lane == 0) {
+    warp_sums[warp_id] = local_squared_deviation;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    float block_sum = lane < kWarpsPerBlock ? warp_sums[lane] : 0.0F;
+    block_sum = warp_reduce_sum(block_sum);
+    if (lane == 0) {
+      const float variance = block_sum / static_cast<float>(cols);
+      warp_sums[0] = rsqrtf(variance + eps);
+    }
+  }
+  __syncthreads();
+
+  const float inverse_std = warp_sums[0];
+  for (std::uint64_t col4 = tid; col4 < vec_cols; col4 += blockDim.x) {
+    const float4 x = row_input4[col4];
+    const float4 w = weight4[col4];
+    const float4 b = bias4[col4];
+    float4 y;
+    y.x = (x.x - mean) * inverse_std * w.x + b.x;
+    y.y = (x.y - mean) * inverse_std * w.y + b.y;
+    y.z = (x.z - mean) * inverse_std * w.z + b.z;
+    y.w = (x.w - mean) * inverse_std * w.w + b.w;
+    row_output4[col4] = y;
+  }
+}
+
 int validate_layernorm_arguments(
     const float* input,
     const float* weight,
@@ -441,6 +528,55 @@ extern "C" int cuda_operator_layernorm_v3(
   layernorm_v3_welford_row_kernel<<<
       static_cast<unsigned int>(rows),
       kLayerNormV3Threads,
+      0,
+      cuda_stream>>>(input, weight, bias, output, rows, cols, eps);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_layernorm_v4(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps,
+    void* stream) {
+  const int validation =
+      validate_layernorm_arguments(input, weight, bias, output, rows, cols, eps);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  const bool aligned =
+      (reinterpret_cast<std::uintptr_t>(input) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(weight) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(bias) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(output) % alignof(float4) == 0);
+
+  if ((cols % 4 == 0) && aligned) {
+    const std::uint64_t vec_cols = cols / 4;
+    layernorm_v4_float4_row_kernel<<<
+        static_cast<unsigned int>(rows),
+        kLayerNormV4Threads,
+        0,
+        cuda_stream>>>(
+            reinterpret_cast<const float4*>(input),
+            reinterpret_cast<const float4*>(weight),
+            reinterpret_cast<const float4*>(bias),
+            reinterpret_cast<float4*>(output),
+            rows,
+            vec_cols,
+            cols,
+            eps);
+    return static_cast<int>(cudaGetLastError());
+  }
+
+  layernorm_v2_warp_row_kernel<<<
+      static_cast<unsigned int>(rows),
+      kLayerNormV2Threads,
       0,
       cuda_stream>>>(input, weight, bias, output, rows, cols, eps);
   return static_cast<int>(cudaGetLastError());
