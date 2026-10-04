@@ -3309,3 +3309,100 @@ Artifacts:
 - `reports/data/fused_residual_layernorm_v3_ptxas_sm89.txt`
 - `reports/data/fused_residual_layernorm_stable_seed1_rtx4090.csv`
 - `reports/data/fused_residual_layernorm_stable_seed2_rtx4090.csv`
+
+## E28 — Fused Residual + LayerNorm V4: profile-guided dispatcher
+
+Status: **validated; final fused residual LayerNorm policy**
+
+### Profile generation
+
+Added:
+
+`benchmarks/generate_fused_residual_layernorm_dispatch_profile.py`
+
+Input:
+
+- two independent stable V2/V3 profiling CSVs;
+- L2 eviction before every timed sample;
+- interleaved variant order;
+- 7 rounds x 80 launches.
+
+Acceptance gate:
+
+```text
+runs >= 2
+AND
+V2 / V3 >= 1.05
+in every independent run
+```
+
+Accepted shapes:
+
+```text
+128 x 4096
+256 x 4096
+512 x 4096
+
+128 x 8192
+256 x 8192
+512 x 8192
+
+1024 x 1024
+1024 x 4096
+1536 x 512
+```
+
+Rejected examples:
+
+```text
+128 x 1024: below 1.05x in both runs
+1024 x 512: ~1.01–1.03x only
+1536 x 1024: ~neutral
+2048 x 512: V3 regresses
+2048 x 4096: ~1.04x only
+```
+
+### Implementation
+
+V4 contains no new kernel body.
+
+For accepted aligned shapes:
+
+```text
+V4 -> V3 float4 fused kernel
+```
+
+Otherwise:
+
+```text
+V4 -> V2 scalar fused warp-shuffle kernel
+```
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 578 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+A final cold-cache V2/V3/V4 run confirmed correctness and path behavior. V4 wrapper timing itself remains subject to GPU operating-state noise, so the dispatch policy is intentionally derived only from direct V2/V3 measurements.
+
+Artifacts:
+
+- `reports/data/fused_residual_layernorm_dispatch_profile_rtx4090.csv`
+- `reports/data/fused_residual_layernorm_v4_final_cold_rtx4090.csv`
+
+### Final fused residual LayerNorm sequence
+
+```text
+V0 serial fused baseline
+-> V1 block-parallel fused reductions
+-> V2 warp-shuffle fused reductions
+-> V3 aligned float4 fused fast path
+-> V4 profile-guided dispatch
+```
+
+This case study demonstrates an end-to-end fusion result rather than only a faster standalone normalization kernel: selected shapes beat the unfused framework path by eliminating the residual-add intermediate while retaining optimized row statistics and vectorized IO.

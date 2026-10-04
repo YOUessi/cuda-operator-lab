@@ -913,3 +913,54 @@ Cold-cache interleaved profiling across two independent seeds shows stable V2 ->
 Other shapes are neutral or fail the 5% acceptance gate.
 
 Conclusion: V3 is a strong fused fast path, but still shape-dependent. Final step: profile-guided V4 dispatcher between V2 and V3.
+
+## Fused Residual + LayerNorm V4 profile-guided dispatcher
+
+V4 adds no new device kernel. It selects between:
+
+- V2 scalar fused warp-shuffle kernel;
+- V3 aligned float4 fused kernel.
+
+The policy is generated from direct V2/V3 L2-evicted interleaved benchmark results using:
+
+```text
+minimum independent runs: 2
+minimum speedup in every run: 1.05x
+```
+
+Accepted RTX 4090 Laptop profile:
+
+- 128 x 4096;
+- 256 x 4096;
+- 512 x 4096;
+- 128 x 8192;
+- 256 x 8192;
+- 512 x 8192;
+- 1024 x 1024;
+- 1024 x 4096;
+- 1536 x 512.
+
+All other shapes fall back to V2.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **578 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors.
+
+Representative cold-cache direct-path evidence:
+
+- 128 x 4096: V2 ~29 us, V3 ~23.6 us;
+- 512 x 4096: V2 ~73.7 us, V3 ~62.5–67.6 us;
+- 128 x 8192: V2 ~53–56 us, V3 ~39.8–40.2 us;
+- 1024 x 4096: V2 ~122 us, V3 ~112–115 us.
+
+Fallback examples:
+
+- 2048 x 4096: direct V3 improves only ~4%, below acceptance gate;
+- 2048 x 512: V3 regresses;
+- 1536 x 1024: ~neutral.
+
+As with RMSNorm/LayerNorm dispatch experiments, V4 wrapper timing itself is not used to derive the policy because microsecond-scale GPU operating-state noise can make two calls to the same underlying kernel report different latency. The dispatcher decision is based only on direct V2 versus direct V3 repeated measurements.

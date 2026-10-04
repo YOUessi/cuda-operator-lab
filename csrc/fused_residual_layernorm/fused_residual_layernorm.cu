@@ -467,3 +467,68 @@ extern "C" int cuda_operator_fused_residual_layernorm_v3(
           input, residual, weight, bias, output, rows, cols, eps);
   return static_cast<int>(cudaGetLastError());
 }
+
+
+extern "C" int cuda_operator_fused_residual_layernorm_v4(
+    const float* input,
+    const float* residual,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps,
+    void* stream) {
+  const int validation =
+      validate_arguments(input, residual, weight, bias, output, rows, cols, eps);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const bool profiled_float4 =
+      (rows == 128 && cols == 4096) ||
+      (rows == 256 && cols == 4096) ||
+      (rows == 512 && cols == 4096) ||
+      (rows == 128 && cols == 8192) ||
+      (rows == 256 && cols == 8192) ||
+      (rows == 512 && cols == 8192) ||
+      (rows == 1024 && cols == 1024) ||
+      (rows == 1024 && cols == 4096) ||
+      (rows == 1536 && cols == 512);
+
+  const bool aligned =
+      (reinterpret_cast<std::uintptr_t>(input) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(residual) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(weight) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(bias) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(output) % alignof(float4) == 0);
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  if (profiled_float4 && aligned && (cols % 4 == 0)) {
+    const std::uint64_t vec_cols = cols / 4;
+    fused_residual_layernorm_v3_float4_row_kernel<<<
+        static_cast<unsigned int>(rows),
+        kFusedResidualLayerNormV3Threads,
+        0,
+        cuda_stream>>>(
+            reinterpret_cast<const float4*>(input),
+            reinterpret_cast<const float4*>(residual),
+            reinterpret_cast<const float4*>(weight),
+            reinterpret_cast<const float4*>(bias),
+            reinterpret_cast<float4*>(output),
+            rows,
+            vec_cols,
+            cols,
+            eps);
+    return static_cast<int>(cudaGetLastError());
+  }
+
+  fused_residual_layernorm_v2_warp_row_kernel<<<
+      static_cast<unsigned int>(rows),
+      kFusedResidualLayerNormV2Threads,
+      0,
+      cuda_stream>>>(
+          input, residual, weight, bias, output, rows, cols, eps);
+  return static_cast<int>(cudaGetLastError());
+}
