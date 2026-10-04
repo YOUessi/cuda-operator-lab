@@ -3163,3 +3163,62 @@ Representative fused V1 versus unfused PyTorch:
 This is the first stage where eliminating the residual intermediate translates into an end-to-end latency win.
 
 Next action: V2 warp-shuffle reductions.
+
+## E26 — Fused Residual + LayerNorm V2: warp-shuffle reductions
+
+Status: **validated; ready to merge**
+
+V2 changes only reduction coordination:
+
+```text
+V1:
+  256 shared partials + repeated barriers
+
+V2:
+  warp shuffle
+  -> 8 shared warp partials
+  -> first warp final reduction
+```
+
+Residual addition remains fused into both statistics passes and the final affine pass.
+
+Validation:
+
+```text
+clean build: PASS
+full pytest: 541 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+ptxas:
+
+```text
+V1:
+  21 registers/thread
+  1024 B shared
+
+V2:
+  23 registers/thread
+  32 B shared
+  0 spills
+```
+
+Representative timings:
+
+| Shape | V1 | V2 | PyTorch unfused |
+|---:|---:|---:|---:|
+| 128 x 512 | 12.016 | 12.080 | 13.312 |
+| 128 x 1024 | 12.256 | 12.288 | 13.312 |
+| 1024 x 128 | 15.360 | 12.288 | 14.336 |
+| 1024 x 512 | 17.248 | 14.144 | 14.208 |
+| 128 x 4096 | 15.968 | 15.360 | 14.336 |
+| 1024 x 4096 | 46.080 | 45.024 | 40.720 |
+| 128 x 8192 | 25.600 | 24.576 | 19.312 |
+
+### Interpretation
+
+Warp shuffle helps high-row-count workloads and makes the fused path competitive or faster on narrow/medium widths. Remaining wide-row headroom is now primarily a memory-path problem.
+
+Next action: V3 aligned float4 fused IO.

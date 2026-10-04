@@ -8,6 +8,17 @@ namespace {
 
 constexpr int kFusedResidualLayerNormV0Threads = 128;
 constexpr int kFusedResidualLayerNormV1Threads = 256;
+constexpr int kFusedResidualLayerNormV2Threads = 256;
+constexpr int kWarpSize = 32;
+constexpr int kWarpsPerBlock = kFusedResidualLayerNormV2Threads / kWarpSize;
+constexpr unsigned int kFullWarpMask = 0xffffffffU;
+
+__device__ __forceinline__ float warp_reduce_sum(float value) {
+  for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+    value += __shfl_down_sync(kFullWarpMask, value, offset);
+  }
+  return value;
+}
 
 __global__ void fused_residual_layernorm_v0_serial_row_kernel(
     const float* input,
@@ -126,6 +137,82 @@ __global__ void fused_residual_layernorm_v1_block_row_kernel(
   }
 }
 
+__global__ void fused_residual_layernorm_v2_warp_row_kernel(
+    const float* input,
+    const float* residual,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps) {
+  __shared__ float warp_sums[kWarpsPerBlock];
+
+  const std::uint64_t row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+
+  const unsigned int tid = threadIdx.x;
+  const int lane = tid & (kWarpSize - 1);
+  const int warp_id = tid / kWarpSize;
+  const float* row_input = input + row * cols;
+  const float* row_residual = residual + row * cols;
+  float* row_output = output + row * cols;
+
+  float local_sum = 0.0F;
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    local_sum += row_input[col] + row_residual[col];
+  }
+
+  local_sum = warp_reduce_sum(local_sum);
+  if (lane == 0) {
+    warp_sums[warp_id] = local_sum;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    float block_sum = lane < kWarpsPerBlock ? warp_sums[lane] : 0.0F;
+    block_sum = warp_reduce_sum(block_sum);
+    if (lane == 0) {
+      warp_sums[0] = block_sum / static_cast<float>(cols);
+    }
+  }
+  __syncthreads();
+
+  const float mean = warp_sums[0];
+  __syncthreads();
+
+  float local_sq = 0.0F;
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    const float value = row_input[col] + row_residual[col];
+    const float centered = value - mean;
+    local_sq += centered * centered;
+  }
+
+  local_sq = warp_reduce_sum(local_sq);
+  if (lane == 0) {
+    warp_sums[warp_id] = local_sq;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    float block_sum = lane < kWarpsPerBlock ? warp_sums[lane] : 0.0F;
+    block_sum = warp_reduce_sum(block_sum);
+    if (lane == 0) {
+      const float variance = block_sum / static_cast<float>(cols);
+      warp_sums[0] = rsqrtf(variance + eps);
+    }
+  }
+  __syncthreads();
+
+  const float inv_std = warp_sums[0];
+  for (std::uint64_t col = tid; col < cols; col += blockDim.x) {
+    const float value = row_input[col] + row_residual[col];
+    row_output[col] = (value - mean) * inv_std * weight[col] + bias[col];
+  }
+}
+
 int validate_arguments(
     const float* input,
     const float* residual,
@@ -201,6 +288,33 @@ extern "C" int cuda_operator_fused_residual_layernorm_v1(
   fused_residual_layernorm_v1_block_row_kernel<<<
       static_cast<unsigned int>(rows),
       kFusedResidualLayerNormV1Threads,
+      0,
+      cuda_stream>>>(
+          input, residual, weight, bias, output, rows, cols, eps);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_fused_residual_layernorm_v2(
+    const float* input,
+    const float* residual,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    float eps,
+    void* stream) {
+  const int validation =
+      validate_arguments(input, residual, weight, bias, output, rows, cols, eps);
+  if (validation != static_cast<int>(cudaSuccess) || rows == 0) {
+    return validation;
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  fused_residual_layernorm_v2_warp_row_kernel<<<
+      static_cast<unsigned int>(rows),
+      kFusedResidualLayerNormV2Threads,
       0,
       cuda_stream>>>(
           input, residual, weight, bias, output, rows, cols, eps);
