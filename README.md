@@ -177,6 +177,30 @@ Stable 100-repeat results:
 
 The win is shape-dependent; 128 x 512 slightly regresses. That points to the next experiment: width-aware thread-count dispatch rather than assuming 256 threads per row is optimal.
 
+### Softmax V3 width-aware dispatch
+
+V3 keeps V2's warp-shuffle reductions but avoids launching a 256-thread row block for every narrow row:
+
+```text
+cols <= 32   -> 32 threads
+cols <= 64   -> 64 threads
+cols <= 128  -> 128 threads
+cols > 128   -> exact V2 256-thread kernel
+```
+
+Clean validation: **206 tests passed**. Compute Sanitizer memcheck / racecheck / synccheck are clean after fixing a Racecheck-only one-warp shared-memory hazard.
+
+20-warmup / 100-repeat RTX 4090 results:
+
+| Shape | V2 | V3 | Speedup |
+|---:|---:|---:|---:|
+| 4096 x 32 | 17.408 us | **10.240 us** | **1.70x** |
+| 4096 x 64 | 17.408 us | **12.064 us** | **1.44x** |
+| 16384 x 32 | 46.880 us | **17.408 us** | **2.69x** |
+| 16384 x 64 | 47.328 us | **23.552 us** | **2.01x** |
+
+This confirms that launch geometry should follow row width for high-row-count narrow Softmax workloads. Full operation history, including the sanitizer-discovered race and its fix, is in `docs/experiment-log.md`.
+
 ## Quick start
 
 ```bash
