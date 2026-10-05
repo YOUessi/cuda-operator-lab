@@ -187,8 +187,11 @@ def main() -> None:
         })
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(dict.fromkeys(
+        key for record in records for key in record.keys()
+    ))
     with args.output.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(records[0].keys()))
+        w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(records)
 
