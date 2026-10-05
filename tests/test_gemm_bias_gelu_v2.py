@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from cuda_operator_lab.bindings import gemm_bias_gelu_v2, gemm_bias_gelu_v2_into
-from cuda_operator_lab.references import gemm_bias_gelu
+from cuda_operator_lab.references import gemm_bias_gelu_tanh
 
 
 pytestmark = pytest.mark.skipif(
@@ -35,10 +35,10 @@ def test_gemm_bias_gelu_v2_matches_reference(m: int, k: int, n: int) -> None:
     bias = torch.randn(n, device="cuda", dtype=torch.float32, generator=g)
 
     actual = gemm_bias_gelu_v2(x, weight, bias)
-    expected = gemm_bias_gelu(x, weight, bias)
+    expected = gemm_bias_gelu_tanh(x, weight, bias)
 
     torch.cuda.synchronize()
-    torch.testing.assert_close(actual, expected, rtol=5e-4, atol=5e-4)
+    torch.testing.assert_close(actual, expected, rtol=3e-4, atol=3e-4)
 
 
 def test_gemm_bias_gelu_v2_reuses_output() -> None:
@@ -51,4 +51,4 @@ def test_gemm_bias_gelu_v2_reuses_output() -> None:
     torch.cuda.synchronize()
 
     assert returned.data_ptr() == out.data_ptr()
-    torch.testing.assert_close(out, gemm_bias_gelu(x, weight, bias), rtol=5e-4, atol=5e-4)
+    torch.testing.assert_close(out, gemm_bias_gelu(x, weight, bias), rtol=3e-4, atol=3e-4)
