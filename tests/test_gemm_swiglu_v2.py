@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from cuda_operator_lab.bindings import gemm_swiglu_v2, gemm_swiglu_v2_into
-from cuda_operator_lab.references import gemm_swiglu
+from cuda_operator_lab.references import gemm_swiglu, gemm_swiglu_packed
 
 
 pytestmark = pytest.mark.skipif(
@@ -35,10 +35,10 @@ def test_gemm_swiglu_v2_matches_reference(m: int, k: int, n: int) -> None:
     packed_w = torch.cat([gate_w, up_w], dim=0).contiguous()
 
     actual = gemm_swiglu_v2(x, packed_w)
-    expected = gemm_swiglu(x, gate_w, up_w)
+    expected = gemm_swiglu_packed(x, packed_w)
 
     torch.cuda.synchronize()
-    torch.testing.assert_close(actual, expected, rtol=4e-4, atol=4e-4)
+    torch.testing.assert_close(actual, expected, rtol=5e-6, atol=5e-6)
 
 
 def test_gemm_swiglu_v2_reuses_workspace_and_output() -> None:
