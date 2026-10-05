@@ -1,0 +1,41 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785931gemm_swiglu_v8_shared_ab_kernelEPK13__nv_bfloat16S2_S2_Pfiii' for 'sm_89'
+ptxas info    : Function properties for _ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785931gemm_swiglu_v8_shared_ab_kernelEPK13__nv_bfloat16S2_S2_Pfiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 40 registers, used 1 barriers, 5120 bytes smem, 396 bytes cmem[0]
+ptxas info    : Compile time = 14.599 ms
+ptxas info    : Compiling entry function '_ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785930gemm_swiglu_v7_shared_a_kernelEPK13__nv_bfloat16S2_S2_Pfiii' for 'sm_89'
+ptxas info    : Function properties for _ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785930gemm_swiglu_v7_shared_a_kernelEPK13__nv_bfloat16S2_S2_Pfiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 48 registers, used 1 barriers, 512 bytes smem, 396 bytes cmem[0]
+ptxas info    : Compile time = 12.748 ms
+ptxas info    : Compiling entry function '_ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785926gemm_swiglu_v6_wmma_kernelEPK13__nv_bfloat16S2_S2_Pfiii' for 'sm_89'
+ptxas info    : Function properties for _ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785926gemm_swiglu_v6_wmma_kernelEPK13__nv_bfloat16S2_S2_Pfiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 40 registers, used 0 barriers, 396 bytes cmem[0]
+ptxas info    : Compile time = 14.531 ms
+ptxas info    : Compiling entry function '_ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785933swiglu_packed_split_float4_kernelEPK6float4PS0_mm' for 'sm_89'
+ptxas info    : Function properties for _ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785933swiglu_packed_split_float4_kernelEPK6float4PS0_mm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, used 0 barriers, 384 bytes cmem[0]
+ptxas info    : Compile time = 7.648 ms
+ptxas info    : Compiling entry function '_ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785926swiglu_packed_split_kernelEPKfPfmm' for 'sm_89'
+ptxas info    : Function properties for _ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785926swiglu_packed_split_kernelEPKfPfmm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers, 384 bytes cmem[0]
+ptxas info    : Compile time = 6.365 ms
+ptxas info    : Compiling entry function '_ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785931swiglu_packed_split_bf16_kernelEPKtPfmm' for 'sm_89'
+ptxas info    : Function properties for _ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785931swiglu_packed_split_bf16_kernelEPKtPfmm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers, 384 bytes cmem[0]
+ptxas info    : Compile time = 6.422 ms
+ptxas info    : Compiling entry function '_ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785928swiglu_inplace_float4_kernelEP6float4PKS0_m' for 'sm_89'
+ptxas info    : Function properties for _ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785928swiglu_inplace_float4_kernelEP6float4PKS0_m
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 28 registers, used 0 barriers, 376 bytes cmem[0]
+ptxas info    : Compile time = 5.049 ms
+ptxas info    : Compiling entry function '_ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785921swiglu_inplace_kernelEPfPKfm' for 'sm_89'
+ptxas info    : Function properties for _ZN47_GLOBAL__N__837bd145_14_gemm_swiglu_cu_1848785921swiglu_inplace_kernelEPfPKfm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 0 barriers, 376 bytes cmem[0]
+ptxas info    : Compile time = 3.768 ms
