@@ -3821,3 +3821,44 @@ Artifacts:
 ### Interpretation
 
 The custom fused post-kernel is not the bottleneck; two GEMMs dominate. V1 should vectorize the post-kernel only as an isolated control experiment. If gains remain marginal, further work should move to a dual-GEMM fusion mechanism such as CUTLASS/custom Tensor Core kernels rather than additional pointwise tuning.
+
+## E35 — GEMM + SwiGLU V1: float4 post-kernel control experiment
+
+Status: **validated negative/limited result**
+
+Held constant:
+
+- two cuBLAS SGEMM calls;
+- input/weight layout;
+- workspace/output allocation policy;
+- SwiGLU math.
+
+Changed only:
+
+```text
+scalar post-kernel -> float4 post-kernel
+```
+
+Validation:
+
+```text
+full pytest: 729 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+max_abs_error: 0
+```
+
+Selected timing:
+
+| M x K x N | V0 scalar post | V1 float4 post |
+|---:|---:|---:|
+| 32 x 128 x 256 | 27.376 us | 27.648 us |
+| 128 x 512 x 512 | 35.840 us | 35.840 us |
+| 128 x 1024 x 4096 | 147.456 us | 160.560 us |
+| 512 x 1024 x 4096 | 590.944 us | 571.392 us |
+| 512 x 4096 x 4096 | 2474.576 us | 2516.800 us |
+
+The result confirms the final activation kernel is not the dominant bottleneck.
+
+Next experiment: pack gate/up weights into one [2N,K] matrix and replace two SGEMMs with one larger SGEMM, then split the packed projection inside the SwiGLU kernel.

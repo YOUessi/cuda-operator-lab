@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import gemm_swiglu_v0_into
+from cuda_operator_lab.bindings import gemm_swiglu_v0_into, gemm_swiglu_v1_into
 from cuda_operator_lab.references import gemm_swiglu
 
 
@@ -69,11 +69,10 @@ def main() -> None:
             torch.ops.aten.silu.out(gate_tmp, out=torch_out)
             torch_out.mul_(up_tmp)
 
-        ours = measure_us(
-            lambda: gemm_swiglu_v0_into(x, gate_w, up_w, workspace, out),
-            warmup=args.warmup,
-            repeats=args.repeats,
-        )
+        variants = [
+            ("v0_scalar_post", gemm_swiglu_v0_into),
+            ("v1_float4_post", gemm_swiglu_v1_into),
+        ]
         torch_pre = measure_us(
             torch_preallocated,
             warmup=args.warmup,
@@ -85,29 +84,44 @@ def main() -> None:
             repeats=args.repeats,
         )
 
-        om, _, op95 = summarize(ours)
         tp, _, tp95 = summarize(torch_pre)
         ta, _, ta95 = summarize(torch_alloc)
 
-        print(
-            f"{m}x{k}x{n} v0={om:.3f} us "
-            f"torch_prealloc={tp:.3f} us "
-            f"ratio={om/tp:.3f}x max_abs={max_abs:.3e}"
-        )
-        records.append({
-            "m": m,
-            "k": k,
-            "n": n,
-            "variant": "v0_dual_cublas_plus_fused_swiglu",
-            "ours_median_us": om,
-            "ours_p95_us": op95,
-            "torch_prealloc_median_us": tp,
-            "torch_prealloc_p95_us": tp95,
-            "torch_alloc_median_us": ta,
-            "torch_alloc_p95_us": ta95,
-            "ratio_vs_torch_prealloc": om / tp if tp else None,
-            "max_abs_error": max_abs,
-        })
+        for name, fn in variants:
+            workspace = torch.empty(m, n, device="cuda", dtype=torch.float32)
+            out = torch.empty_like(workspace)
+            actual = fn(x, gate_w, up_w, workspace, out)
+            torch.cuda.synchronize()
+            max_abs = float((actual - expected).abs().max().item()) if out.numel() else 0.0
+
+            samples = measure_us(
+                lambda fn=fn,workspace=workspace,out=out: fn(
+                    x, gate_w, up_w, workspace, out
+                ),
+                warmup=args.warmup,
+                repeats=args.repeats,
+            )
+            om, _, op95 = summarize(samples)
+
+            print(
+                f"{m}x{k}x{n} {name}={om:.3f} us "
+                f"torch_prealloc={tp:.3f} us "
+                f"ratio={om/tp:.3f}x max_abs={max_abs:.3e}"
+            )
+            records.append({
+                "m": m,
+                "k": k,
+                "n": n,
+                "variant": name,
+                "ours_median_us": om,
+                "ours_p95_us": op95,
+                "torch_prealloc_median_us": tp,
+                "torch_prealloc_p95_us": tp95,
+                "torch_alloc_median_us": ta,
+                "torch_alloc_p95_us": ta95,
+                "ratio_vs_torch_prealloc": om / tp if tp else None,
+                "max_abs_error": max_abs,
+            })
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8") as f:
