@@ -51,4 +51,4 @@ def test_gemm_bias_gelu_v2_reuses_output() -> None:
     torch.cuda.synchronize()
 
     assert returned.data_ptr() == out.data_ptr()
-    torch.testing.assert_close(out, gemm_bias_gelu(x, weight, bias), rtol=3e-4, atol=3e-4)
+    torch.testing.assert_close(out, gemm_bias_gelu_tanh(x, weight, bias), rtol=3e-4, atol=3e-4)
