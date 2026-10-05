@@ -1709,3 +1709,58 @@ V7 -> V9:
 Conclusion: higher A reuse becomes worthwhile only for sufficiently large work. The larger 256-thread block reduces efficiency for small/medium GEMMs, while large GEMMs recover a modest 2–3% gain.
 
 This reinforces a shape-regime strategy rather than a single custom tile. Small GEMMs can benefit from workspace-free fused WMMA; large GEMMs should stay on cuBLAS until a substantially better custom pipeline exists.
+
+## GEMM + SwiGLU V10 hybrid runtime policy
+
+V10 adds no new GEMM kernel. It combines the two strongest existing execution paths:
+
+- V7 workspace-free custom WMMA for small launch-dominated shapes;
+- V4 cuBLAS BF16 Tensor Core packed GEMM for larger throughput-dominated shapes.
+
+The crossover rule comes from two independent direct V4/V7 sweeps over:
+
+```text
+M in {16,32,64,128}
+K in {64,128,256,512,1024}
+N in {64,128,256,512,1024,2048}
+```
+
+Stable result:
+
+```text
+if M <= 128
+and K <= 128
+and N <= 2048
+and M % 16 == 0
+and K % 16 == 0
+and N % 64 == 0:
+    use V7
+else:
+    use V4
+```
+
+Every tested K=64/128 shape in this region favored V7 by at least 1.05x in both independent runs. K>=256 did not form a robust custom-win region.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **808 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors.
+
+Representative final V10 timings:
+
+- 16 x 64 x 64: 14.960 us V4 -> 12.192 us V10 (~1.23x);
+- 32 x 128 x 256: 14.336 us -> 12.944 us (~1.11x);
+- 64 x 128 x 1024: 15.360 us -> 13.088 us (~1.17x);
+- 128 x 64 x 2048: 17.216 us -> 13.056 us (~1.32x).
+
+Fallback validation:
+
+- 32 x 256 x 64: 15.360 us V4 == 15.360 us V10;
+- 128 x 512 x 512: 18.432 us == 18.432 us;
+- 128 x 1024 x 4096: 53.248 us == 53.248 us;
+- 512 x 1024 x 4096: 174.080 us == 174.080 us.
+
+Conclusion: the practical best implementation is hybrid rather than universal. Custom WMMA wins where launch/materialization overhead dominates; cuBLAS wins once GEMM throughput dominates.
