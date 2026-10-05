@@ -260,7 +260,7 @@ Compute Sanitizer
 统一 benchmark：
 
 ```bash
-./scripts/benchmark_all.sh
+bash scripts/benchmark_all.sh
 ```
 
 该命令会重新运行一组代表性核心算子并生成新的本机汇总，不会覆盖本页已经提交的 canonical RTX 4090 Laptop 历史数据。
