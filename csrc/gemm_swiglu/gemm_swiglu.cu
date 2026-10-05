@@ -12,10 +12,17 @@ constexpr int kThreads = 256;
 using cublasHandle_t = void*;
 using cublasStatus_t = int;
 using cublasOperation_t = int;
+using cudaDataType_t = int;
+using cublasComputeType_t = int;
+using cublasGemmAlgo_t = int;
 
 constexpr cublasStatus_t kCublasSuccess = 0;
 constexpr cublasOperation_t kCublasOpN = 0;
 constexpr cublasOperation_t kCublasOpT = 1;
+constexpr cudaDataType_t kCudaR32F = 0;
+constexpr cudaDataType_t kCudaR16BF = 14;
+constexpr cublasComputeType_t kCublasCompute32F = 68;
+constexpr cublasGemmAlgo_t kCublasGemmDefaultTensorOp = 99;
 
 using CublasCreateFn = cublasStatus_t (*)(cublasHandle_t*);
 using CublasDestroyFn = cublasStatus_t (*)(cublasHandle_t);
@@ -36,6 +43,27 @@ using CublasSgemmFn = cublasStatus_t (*)(
     float*,
     int);
 
+using CublasGemmExFn = cublasStatus_t (*)(
+    cublasHandle_t,
+    cublasOperation_t,
+    cublasOperation_t,
+    int,
+    int,
+    int,
+    const void*,
+    const void*,
+    cudaDataType_t,
+    int,
+    const void*,
+    cudaDataType_t,
+    int,
+    const void*,
+    void*,
+    cudaDataType_t,
+    int,
+    cublasComputeType_t,
+    cublasGemmAlgo_t);
+
 struct CublasApi {
   void* library = nullptr;
   cublasHandle_t handle = nullptr;
@@ -43,6 +71,7 @@ struct CublasApi {
   CublasDestroyFn destroy = nullptr;
   CublasSetStreamFn set_stream = nullptr;
   CublasSgemmFn sgemm = nullptr;
+  CublasGemmExFn gemm_ex = nullptr;
   bool ready = false;
 
   CublasApi() {
@@ -53,6 +82,7 @@ struct CublasApi {
     destroy = reinterpret_cast<CublasDestroyFn>(dlsym(library, "cublasDestroy_v2"));
     set_stream = reinterpret_cast<CublasSetStreamFn>(dlsym(library, "cublasSetStream_v2"));
     sgemm = reinterpret_cast<CublasSgemmFn>(dlsym(library, "cublasSgemm_v2"));
+    gemm_ex = reinterpret_cast<CublasGemmExFn>(dlsym(library, "cublasGemmEx"));
 
     if (create == nullptr || destroy == nullptr ||
         set_stream == nullptr || sgemm == nullptr) {
@@ -154,6 +184,42 @@ cublasStatus_t row_major_gemm(
       &beta,
       output,
       n);
+}
+
+cublasStatus_t row_major_gemm_bf16_fp32(
+    CublasApi& api,
+    const void* input_bf16,
+    const void* weight_bf16,
+    float* output,
+    int m,
+    int k,
+    int n) {
+  if (api.gemm_ex == nullptr) {
+    return -1;
+  }
+
+  const float alpha = 1.0F;
+  const float beta = 0.0F;
+  return api.gemm_ex(
+      api.handle,
+      kCublasOpT,
+      kCublasOpN,
+      n,
+      m,
+      k,
+      &alpha,
+      weight_bf16,
+      kCudaR16BF,
+      k,
+      input_bf16,
+      kCudaR16BF,
+      k,
+      &beta,
+      output,
+      kCudaR32F,
+      n,
+      kCublasCompute32F,
+      kCublasGemmDefaultTensorOp);
 }
 
 __global__ void swiglu_packed_split_kernel(
@@ -428,6 +494,63 @@ extern "C" int cuda_operator_gemm_swiglu_v3(
             m,
             vec_n);
     return static_cast<int>(cudaGetLastError());
+  }
+
+  const std::uint64_t elements = m * n;
+  const unsigned int blocks = static_cast<unsigned int>(
+      (elements + kThreads - 1) / kThreads);
+  const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
+  swiglu_packed_split_kernel<<<capped_blocks, kThreads, 0, cuda_stream>>>(
+      workspace, output, m, n);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_swiglu_v4(
+    const void* input_bf16,
+    const void* packed_weight_bf16,
+    float* workspace,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  if (m == 0 || n == 0) {
+    return static_cast<int>(cudaSuccess);
+  }
+  if (input_bf16 == nullptr || packed_weight_bf16 == nullptr ||
+      workspace == nullptr || output == nullptr || k == 0) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  if (m > static_cast<std::uint64_t>(INT32_MAX) ||
+      n > static_cast<std::uint64_t>(INT32_MAX / 2) ||
+      k > static_cast<std::uint64_t>(INT32_MAX)) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+
+  auto& api = cublas_api();
+  if (!api.ready || api.gemm_ex == nullptr) {
+    return static_cast<int>(cudaErrorSharedObjectSymbolNotFound);
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  if (api.set_stream(api.handle, cuda_stream) != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const int mi = static_cast<int>(m);
+  const int ki = static_cast<int>(k);
+  const int packed_n = static_cast<int>(2ULL * n);
+
+  if (row_major_gemm_bf16_fp32(
+          api,
+          input_bf16,
+          packed_weight_bf16,
+          workspace,
+          mi,
+          ki,
+          packed_n) != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
   }
 
   const std::uint64_t elements = m * n;
