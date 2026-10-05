@@ -4205,3 +4205,111 @@ Artifacts:
 
 - reports/data/gemm_swiglu_v4_v5_bf16_workspace_rtx4090.csv
 - reports/data/gemm_swiglu_v5_ptxas_sm89.txt
+
+## E41 — GEMM + SwiGLU V6: true fused WMMA baseline
+
+Status: **validated architectural baseline; small-shape win, large-shape negative result**
+
+### Goal
+
+Remove the materialized [M,2N] projection instead of tuning its storage format.
+
+### Kernel
+
+One warp computes one 16x16 output tile.
+
+For every K tile:
+
+1. load one BF16 A fragment from X;
+2. load one BF16 gate-weight fragment;
+3. load one BF16 up-weight fragment;
+4. issue two WMMA MMA operations into separate FP32 accumulators.
+
+After the K loop:
+
+```text
+gate_acc = SiLU(gate_acc) * up_acc
+```
+
+and only the final FP32 [M,N] tile is stored.
+
+Constraints in the baseline:
+
+```text
+M % 16 == 0
+K % 16 == 0
+N % 16 == 0
+```
+
+### Toolchain finding
+
+Direct WMMA/BF16 headers exposed an incomplete local CUDA-toolkit assembly. The toolkit bootstrap previously omitted CUDA 12.8 CCCL/libcu++ headers, causing nvcc to fall back to an old system `nv/target`.
+
+The bootstrap was fixed to link the matching CUDA 12.8:
+
+```text
+nv/
+cuda/
+cub/
+thrust/
+```
+
+into the project-local toolkit.
+
+### Validation
+
+```text
+full pytest: 772 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+ptxas:
+
+```text
+40 registers/thread
+0 B shared memory
+0 spills
+```
+
+### Performance
+
+| M x K x N | V4 cuBLAS BF16 | V6 fused WMMA | V6 / V4 |
+|---:|---:|---:|---:|
+| 32 x 128 x 256 | 15.024 | 13.312 | 0.886x |
+| 128 x 512 x 512 | 18.336 | 26.624 | 1.452x |
+| 128 x 1024 x 4096 | 53.248 | 119.808 | 2.250x |
+| 512 x 1024 x 4096 | 173.920 | 409.712 | 2.356x |
+| 512 x 4096 x 4096 | 598.448 | 1917.952 | 3.205x |
+
+### Interpretation
+
+V6 proves true fusion can beat cuBLAS on a small launch-dominated GEMM, but its tiling is far too naive for large shapes.
+
+Root cause:
+
+```text
+same 16x16 A tile
+  -> reloaded independently by every N-tile warp
+```
+
+There is no cross-warp A reuse, no shared-memory staging, and no K-stage software pipeline.
+
+### Next action
+
+V7: 4 warps/block covering 16 rows x 64 output columns.
+
+Each block will:
+
+- cooperatively load one 16x16 A tile into shared memory once;
+- reuse it across four N-warps;
+- keep separate gate/up WMMA accumulators per warp;
+- preserve direct register-level SwiGLU and no [M,2N] workspace.
+
+This isolates the value of block-level A reuse before adding B staging or cp.async.
+
+Artifacts:
+
+- reports/data/gemm_swiglu_v4_v6_wmma_rtx4090.csv
+- reports/data/gemm_swiglu_v6_ptxas_sm89.txt
