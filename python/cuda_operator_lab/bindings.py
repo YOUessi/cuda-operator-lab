@@ -125,6 +125,16 @@ class _Library:
             ]
             function.restype = ctypes.c_int
 
+        self.handle.cuda_operator_fused_bias_gelu_v0.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+        ]
+        self.handle.cuda_operator_fused_bias_gelu_v0.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -1101,3 +1111,47 @@ def fused_residual_layernorm_v4(
 ) -> torch.Tensor:
     out = torch.empty_like(x)
     return fused_residual_layernorm_v4_into(x, residual, weight, bias, out, eps)
+
+
+def fused_bias_gelu_v0_into(
+    x: torch.Tensor,
+    bias: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    if not x.is_cuda or not bias.is_cuda or not out.is_cuda:
+        raise ValueError("fused bias GELU tensors must be CUDA tensors")
+    if x.ndim != 2 or bias.ndim != 1 or bias.shape[0] != x.shape[1]:
+        raise ValueError("expected x[rows, cols] and bias[cols]")
+    if x.dtype != torch.float32 or bias.dtype != torch.float32 or out.dtype != torch.float32:
+        raise TypeError("fused bias GELU currently supports float32 only")
+    if out.shape != x.shape:
+        raise ValueError("output shape must equal input shape")
+    if not x.is_contiguous() or not bias.is_contiguous() or not out.is_contiguous():
+        raise ValueError("all tensors must be contiguous")
+    if x.shape[1] == 0:
+        raise ValueError("cols must be > 0")
+
+    rows, cols = x.shape
+    if rows == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_fused_bias_gelu_v0(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(bias.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(rows),
+        ctypes.c_uint64(cols),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def fused_bias_gelu_v0(
+    x: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    out = torch.empty_like(x)
+    return fused_bias_gelu_v0_into(x, bias, out)
