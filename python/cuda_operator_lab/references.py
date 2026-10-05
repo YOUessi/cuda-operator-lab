@@ -139,3 +139,23 @@ def gemm_bias_gelu(
         torch.matmul(x, weight.transpose(0, 1)) + bias,
         approximate="none",
     )
+
+
+def gemm_bias_gelu_tanh(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    """Trusted float32 GEMM + bias + tanh-approximate GELU reference."""
+    if x.ndim != 2 or weight.ndim != 2:
+        raise ValueError("x and weight must be 2-D")
+    if x.shape[1] != weight.shape[1]:
+        raise ValueError("x.shape[1] must equal weight.shape[1]")
+    if bias.ndim != 1 or bias.shape[0] != weight.shape[0]:
+        raise ValueError("bias length must equal weight.shape[0]")
+    if any(t.dtype != torch.float32 for t in (x, weight, bias)):
+        raise TypeError("gemm_bias_gelu_tanh currently supports float32 only")
+    return torch.nn.functional.gelu(
+        torch.matmul(x, weight.transpose(0, 1)) + bias,
+        approximate="tanh",
+    )
