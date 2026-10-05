@@ -4128,3 +4128,92 @@ The next isolated bottleneck is the FP32 [M,2N] workspace. V5 should keep BF16 T
 Artifact:
 
 - reports/data/gemm_swiglu_v2_v4_bf16_rtx4090.csv
+
+## E39 — GEMM + SwiGLU V4: BF16 Tensor Core packed projection
+
+Status: **validated low-precision Tensor Core fast path**
+
+### Hypothesis
+
+After E38, post-kernel tuning is exhausted. The next dominant lever is GEMM precision.
+
+Keep:
+
+```text
+packed [2N,K] single projection
+FP32 [M,2N] workspace
+FP32 SwiGLU output
+```
+
+Change only:
+
+```text
+FP32 SGEMM
+-> BF16 x BF16 cublasGemmEx
+-> FP32 accumulate/output
+```
+
+### Implementation
+
+Runtime-loaded cuBLAS API now includes:
+
+```text
+cublasGemmEx
+CUDA_R_16BF = 14
+CUDA_R_32F = 0
+CUBLAS_COMPUTE_32F = 68
+CUBLAS_GEMM_DEFAULT_TENSOR_OP = 99
+```
+
+No cuBLAS development-header dependency is added to the repository build; ABI constants were verified against the CUDA 12.8 toolkit on Tang.
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 756 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+### Performance
+
+| M x K x N | V2 FP32 packed | V4 BF16 TC | PyTorch BF16 native | V2/V4 |
+|---:|---:|---:|---:|---:|
+| 32 x 128 x 256 | 16.032 | 14.464 | 20.480 | 1.11x |
+| 128 x 512 x 512 | 28.320 | 18.432 | 19.456 | 1.54x |
+| 128 x 1024 x 4096 | 122.912 | 54.112 | 52.224 | 2.27x |
+| 512 x 1024 x 4096 | 416.368 | 207.696 | 210.848 | 2.01x |
+| 512 x 4096 x 4096 | 2221.056 | 680.752 | 594.752 | 3.26x |
+
+### Numerical study
+
+Reference:
+
+```text
+BF16 tensors are dequantized to FP32
+FP32 matmul + FP32 SwiGLU is treated as the semantic reference
+```
+
+Largest tested case 512 x 4096 x 4096:
+
+```text
+reference |output| max: ~49313
+reference |output| P99: ~12266
+abs error max: 0.5703
+abs error mean: 0.01230
+abs error P99: 0.125
+relative error P99: 3.16e-4
+```
+
+The large maximum absolute error occurs on very large output values; bulk relative error remains small.
+
+### FP16 comparison probe
+
+A separate PyTorch probe against the original FP32 tensors showed FP16 has lower quantization error than BF16 at similar throughput, as expected from its larger mantissa. BF16 retains the larger exponent range.
+
+Decision:
+
+- V4 remains the BF16-model fast path;
+- next experiment should add an FP16 Tensor Core path as a distinct precision mode rather than replacing BF16.
