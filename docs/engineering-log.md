@@ -1764,3 +1764,56 @@ Fallback validation:
 - 512 x 1024 x 4096: 174.080 us == 174.080 us.
 
 Conclusion: the practical best implementation is hybrid rather than universal. Custom WMMA wins where launch/materialization overhead dominates; cuBLAS wins once GEMM throughput dominates.
+
+## GEMM + SwiGLU V11 generated hardware policy
+
+V11 preserves the exact V10 execution paths but removes the hand-maintained crossover constants from the runtime source.
+
+New flow:
+
+```text
+two crossover CSVs
+    -> benchmarks/generate_gemm_swiglu_hybrid_policy.py
+    -> generated_hybrid_policy.h
+    -> V11 runtime dispatch
+```
+
+The generator:
+
+1. loads all measured V4/V7 shapes from every independent run;
+2. marks a shape accepted only if custom speedup >= 1.05x in every run;
+3. searches conservative axis-aligned rectangular regions;
+4. requires every measured point inside the region to be accepted;
+5. emits the largest safe region as C++ constants/function.
+
+On the RTX 4090 Laptop data:
+
+```text
+120 measured shapes
+2 independent runs
+threshold = 1.05x
+
+generated:
+M <= 128
+K <= 128
+N <= 2048
+```
+
+The generated header exactly reproduces the manually-derived V10 policy.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **816 passed**;
+- V10/V11 outputs: bit-identical on custom and fallback shapes;
+- V10/V11 steady-state latency: equal within measurement noise.
+
+Representative:
+
+- 16 x 64 x 64: 12.288 us vs 12.288 us;
+- 32 x 128 x 256: 12.784 us vs 12.544 us;
+- 64 x 128 x 1024: 13.312 us vs 13.312 us;
+- 128 x 1024 x 4096: 54.224 us vs 54.272 us;
+- 512 x 1024 x 4096: 174.816 us vs 174.928 us.
+
+Conclusion: policy generation makes the hybrid runtime reproducible and portable to new GPUs without changing kernel code.
