@@ -1,0 +1,11 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN41_GLOBAL__N__268788c2_9_swiglu_cu_9e72daab23swiglu_v1_float4_kernelEPK6float4S2_PS0_m' for 'sm_89'
+ptxas info    : Function properties for _ZN41_GLOBAL__N__268788c2_9_swiglu_cu_9e72daab23swiglu_v1_float4_kernelEPK6float4S2_PS0_m
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 28 registers, used 0 barriers, 384 bytes cmem[0]
+ptxas info    : Compile time = 5.706 ms
+ptxas info    : Compiling entry function '_ZN41_GLOBAL__N__268788c2_9_swiglu_cu_9e72daab16swiglu_v0_kernelEPKfS1_Pfm' for 'sm_89'
+ptxas info    : Function properties for _ZN41_GLOBAL__N__268788c2_9_swiglu_cu_9e72daab16swiglu_v0_kernelEPKfS1_Pfm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers, 384 bytes cmem[0]
+ptxas info    : Compile time = 3.910 ms

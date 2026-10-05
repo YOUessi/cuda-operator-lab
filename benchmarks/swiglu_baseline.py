@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import swiglu_v0_into
+from cuda_operator_lab.bindings import swiglu_v0_into, swiglu_v1_into
 from cuda_operator_lab.references import swiglu
 
 
@@ -55,22 +55,33 @@ def main() -> None:
         torch.cuda.synchronize()
         max_abs = float((actual - expected).abs().max().item()) if gate.numel() else 0.0
 
-        fused = measure_us(lambda: swiglu_v0_into(gate, up, out), warmup=args.warmup, repeats=args.repeats)
         unfused = measure_us(lambda: swiglu(gate, up), warmup=args.warmup, repeats=args.repeats)
-        fm, _, fp95 = summarize(fused)
         um, _, up95 = summarize(unfused)
 
-        print(f"{rows}x{cols} fused={fm:.3f} us torch_unfused={um:.3f} us speedup={um/fm:.3f}x max_abs={max_abs:.3e}")
-        records.append({
-            "rows": rows,
-            "cols": cols,
-            "fused_median_us": fm,
-            "fused_p95_us": fp95,
-            "torch_unfused_median_us": um,
-            "torch_unfused_p95_us": up95,
-            "speedup_vs_torch_unfused": um / fm if fm else None,
-            "max_abs_error": max_abs,
-        })
+        variants = [
+            ("v0_scalar", swiglu_v0_into),
+            ("v1_float4", swiglu_v1_into),
+        ]
+
+        for name, fn in variants:
+            out = torch.empty_like(gate)
+            actual = fn(gate, up, out)
+            torch.cuda.synchronize()
+            max_abs = float((actual - expected).abs().max().item()) if gate.numel() else 0.0
+            samples = measure_us(lambda fn=fn,out=out: fn(gate,up,out), warmup=args.warmup, repeats=args.repeats)
+            fm, _, fp95 = summarize(samples)
+            print(f"{rows}x{cols} {name}={fm:.3f} us torch_unfused={um:.3f} us speedup={um/fm:.3f}x max_abs={max_abs:.3e}")
+            records.append({
+                "rows": rows,
+                "cols": cols,
+                "variant": name,
+                "fused_median_us": fm,
+                "fused_p95_us": fp95,
+                "torch_unfused_median_us": um,
+                "torch_unfused_p95_us": up95,
+                "speedup_vs_torch_unfused": um / fm if fm else None,
+                "max_abs_error": max_abs,
+            })
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8") as f:
