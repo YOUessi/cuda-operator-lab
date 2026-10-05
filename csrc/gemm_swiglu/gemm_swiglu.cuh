@@ -90,3 +90,14 @@ extern "C" int cuda_operator_gemm_swiglu_v7(
     std::uint64_t k,
     std::uint64_t n,
     void* stream);
+
+
+extern "C" int cuda_operator_gemm_swiglu_v8(
+    const void* input_bf16,
+    const void* gate_weight_bf16,
+    const void* up_weight_bf16,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream);
