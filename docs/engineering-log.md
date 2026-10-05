@@ -1546,3 +1546,54 @@ Against V4's higher-precision FP32-workspace reference, V5 introduces additional
 - 512 x 4096 x 4096: mean abs ~2.49, mean relative ~0.25%, P99 relative ~1.79%.
 
 Decision: retain V5 as a validated memory-bandwidth experiment, but do not replace V4 as the preferred quality/performance path. The 1–3% speed gain is too small relative to the extra intermediate quantization.
+
+## GEMM + SwiGLU V6 custom fused WMMA baseline
+
+V6 is the first implementation in this case study that eliminates the materialized packed projection entirely.
+
+Architecture:
+
+```text
+BF16 X[M,K]
+BF16 W_gate[N,K]
+BF16 W_up[N,K]
+        |
+        | one custom WMMA kernel
+        | one warp per 16x16 output tile
+        | shared X fragment logically reused only inside the warp
+        | two FP32 accumulator fragments:
+        |   gate_acc = X * W_gate^T
+        |   up_acc   = X * W_up^T
+        v
+register-level SiLU(gate_acc) * up_acc
+        |
+        v
+FP32 output[M,N]
+```
+
+No [M,2N] workspace is written.
+
+A CUDA-toolkit assembly issue was exposed by the first direct use of `cuda_bf16.h` / `mma.h`: the local CUDA 12.8 toolkit was missing matching CCCL/libcu++ headers and fell back to an incompatible system `/usr/include/nv/target`. The bootstrap script now links the matching CUDA 12.8 CCCL `nv/cuda/cub/thrust` headers into the local toolkit, making WMMA/BF16 compilation reproducible.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **772 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 40 registers/thread, 0 shared memory, 0 spills.
+
+Performance versus V4 cuBLAS BF16 packed GEMM:
+
+- 32 x 128 x 256: 15.024 us -> 13.312 us, V6 ~1.13x faster;
+- 128 x 512 x 512: 18.336 us -> 26.624 us, V6 ~1.45x slower;
+- 128 x 1024 x 4096: 53.248 us -> 119.808 us, ~2.25x slower;
+- 512 x 1024 x 4096: 173.920 us -> 409.712 us, ~2.36x slower;
+- 512 x 4096 x 4096: 598.448 us -> 1917.952 us, ~3.21x slower.
+
+Interpretation:
+
+The workspace elimination is real and helps launch/overhead-dominated small GEMMs. However, the one-warp-per-tile baseline has no block-level A-tile reuse. For a fixed 16-row tile, every 16-column N warp independently reloads the same A[K] tile from global memory. Large GEMMs therefore suffer severe redundant input traffic and weak tiling/pipelining compared with cuBLAS.
+
+Next: V7 keeps the dual-accumulator, no-workspace architecture but groups multiple N-warps in one block and cooperatively loads each 16x16 A tile into shared memory once per K step.
