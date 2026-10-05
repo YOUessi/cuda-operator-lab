@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+import pytest
+import torch
+
+from cuda_operator_lab.bindings import gemm_swiglu_v3
+from cuda_operator_lab.references import gemm_swiglu, gemm_swiglu_packed
+
+
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA is required",
+)
+
+
+@pytest.mark.parametrize(
+    ("m", "k", "n"),
+    [
+        (0, 32, 64),
+        (1, 1, 1),
+        (4, 16, 32),
+        (17, 31, 63),
+        (32, 128, 256),
+        (64, 256, 512),
+        (128, 512, 1024),
+        (128, 1024, 4096),
+    ],
+)
+def test_gemm_swiglu_v3_matches_reference(m: int, k: int, n: int) -> None:
+    g = torch.Generator(device="cuda")
+    g.manual_seed(20261006 + m * 1000000 + k * 1000 + n)
+    x = torch.randn(m, k, device="cuda", dtype=torch.float32, generator=g)
+    gate_w = torch.randn(n, k, device="cuda", dtype=torch.float32, generator=g)
+    up_w = torch.randn(n, k, device="cuda", dtype=torch.float32, generator=g)
+    packed_w = torch.cat((gate_w, up_w), dim=0).contiguous()
+
+    actual = gemm_swiglu_v3(x, packed_w)
+    expected_packed = gemm_swiglu_packed(x, packed_w)
+    expected_math = gemm_swiglu(x, gate_w, up_w)
+
+    torch.cuda.synchronize()
+    torch.testing.assert_close(actual, expected_packed, rtol=5e-6, atol=5e-6)
+    torch.testing.assert_close(actual, expected_math, rtol=1e-3, atol=7e-4)
+
+
+def test_gemm_swiglu_v3_scalar_fallback() -> None:
+    m, k, n = 17, 31, 63
+    x = torch.randn(m, k, device="cuda", dtype=torch.float32)
+    gate_w = torch.randn(n, k, device="cuda", dtype=torch.float32)
+    up_w = torch.randn(n, k, device="cuda", dtype=torch.float32)
+    packed_w = torch.cat((gate_w, up_w), dim=0).contiguous()
+    actual = gemm_swiglu_v3(x, packed_w)
+    expected = gemm_swiglu_packed(x, packed_w)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(actual, expected, rtol=5e-6, atol=5e-6)
