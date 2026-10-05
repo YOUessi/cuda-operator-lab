@@ -255,6 +255,18 @@ class _Library:
         ]
         self.handle.cuda_operator_gemm_bias_gelu_v5.restype = ctypes.c_int
 
+        self.handle.cuda_operator_gemm_bias_gelu_v6.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+        ]
+        self.handle.cuda_operator_gemm_bias_gelu_v6.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -1817,3 +1829,59 @@ def gemm_bias_gelu_v5(
         dtype=torch.float32,
     )
     return gemm_bias_gelu_v5_into(x, weight, bias, out)
+
+
+def gemm_bias_gelu_v6_into(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    if not all(t.is_cuda for t in (x, weight, bias, out)):
+        raise ValueError("GEMM Bias GELU tensors must be CUDA tensors")
+    if x.ndim != 2 or weight.ndim != 2:
+        raise ValueError("x and weight must be 2-D")
+    if x.shape[1] != weight.shape[1]:
+        raise ValueError("x.shape[1] must equal weight.shape[1]")
+    if bias.ndim != 1 or bias.shape[0] != weight.shape[0]:
+        raise ValueError("bias length must equal weight.shape[0]")
+    expected_shape = (x.shape[0], weight.shape[0])
+    if out.shape != expected_shape:
+        raise ValueError(f"output shape must be {expected_shape}")
+    if any(t.dtype != torch.float32 for t in (x, weight, bias, out)):
+        raise TypeError("GEMM Bias GELU currently supports float32 only")
+    if not all(t.is_contiguous() for t in (x, weight, bias, out)):
+        raise ValueError("all GEMM Bias GELU tensors must be contiguous")
+
+    m, k = x.shape
+    n = weight.shape[0]
+    if m == 0 or n == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_gemm_bias_gelu_v6(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(weight.data_ptr()),
+        ctypes.c_void_p(bias.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(m),
+        ctypes.c_uint64(k),
+        ctypes.c_uint64(n),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def gemm_bias_gelu_v6(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    out = torch.empty(
+        (x.shape[0], weight.shape[0]),
+        device=x.device,
+        dtype=torch.float32,
+    )
+    return gemm_bias_gelu_v6_into(x, weight, bias, out)
