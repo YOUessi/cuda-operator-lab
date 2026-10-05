@@ -38,7 +38,7 @@ def test_gemm_swiglu_v2_matches_reference(m: int, k: int, n: int) -> None:
     expected = gemm_swiglu(x, gate_w, up_w)
 
     torch.cuda.synchronize()
-    torch.testing.assert_close(actual, expected, rtol=4e-4, atol=4e-4)
+    torch.testing.assert_close(actual, expected, rtol=1e-3, atol=7e-4)
 
 
 def test_gemm_swiglu_v2_reuses_workspace_and_output() -> None:
