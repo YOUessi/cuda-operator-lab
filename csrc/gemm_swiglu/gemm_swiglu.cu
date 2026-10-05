@@ -107,6 +107,27 @@ __global__ void swiglu_inplace_float4_kernel(
   }
 }
 
+__global__ void swiglu_from_packed_projection_kernel(
+    const float* packed,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t n) {
+  const std::uint64_t elements = m * n;
+  const std::uint64_t packed_cols = 2 * n;
+
+  for (std::uint64_t idx =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       idx < elements;
+       idx += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const std::uint64_t row = idx / n;
+    const std::uint64_t col = idx - row * n;
+    const std::uint64_t base = row * packed_cols;
+    const float gate = packed[base + col];
+    const float up = packed[base + n + col];
+    output[idx] = silu(gate) * up;
+  }
+}
+
 int validate_arguments(
     const float* input,
     const float* gate_weight,
@@ -265,5 +286,67 @@ extern "C" int cuda_operator_gemm_swiglu_v1(
   const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
   swiglu_inplace_kernel<<<capped_blocks, kThreads, 0, cuda_stream>>>(
       output, workspace, elements);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_swiglu_v2(
+    const float* input,
+    const float* packed_weight,
+    float* workspace,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  if (m == 0 || n == 0) {
+    return static_cast<int>(cudaSuccess);
+  }
+  if (input == nullptr || packed_weight == nullptr ||
+      workspace == nullptr || output == nullptr || k == 0) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  if (m > static_cast<std::uint64_t>(INT32_MAX) ||
+      n > static_cast<std::uint64_t>(INT32_MAX / 2) ||
+      k > static_cast<std::uint64_t>(INT32_MAX)) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+
+  auto& api = cublas_api();
+  if (!api.ready) {
+    return static_cast<int>(cudaErrorSharedObjectSymbolNotFound);
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  if (api.set_stream(api.handle, cuda_stream) != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const int mi = static_cast<int>(m);
+  const int ki = static_cast<int>(k);
+  const int packed_n = static_cast<int>(2 * n);
+
+  if (row_major_gemm(
+          api,
+          input,
+          packed_weight,
+          workspace,
+          mi,
+          ki,
+          packed_n) != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const std::uint64_t elements = m * n;
+  const unsigned int blocks = static_cast<unsigned int>(
+      (elements + kThreads - 1) / kThreads);
+  const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
+
+  swiglu_from_packed_projection_kernel<<<
+      capped_blocks,
+      kThreads,
+      0,
+      cuda_stream>>>(workspace, output, m, n);
+
   return static_cast<int>(cudaGetLastError());
 }
