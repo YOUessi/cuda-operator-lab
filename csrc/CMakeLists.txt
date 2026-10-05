@@ -10,6 +10,7 @@ add_library(cuda_operator_lab SHARED
   fused_bias_gelu/fused_bias_gelu.cu
   swiglu/swiglu.cu
   gemm_bias_gelu/gemm_bias_gelu.cu
+  gemm_swiglu/gemm_swiglu.cu
 )
 
 target_include_directories(cuda_operator_lab
@@ -22,6 +23,7 @@ target_include_directories(cuda_operator_lab
     ${CMAKE_CURRENT_SOURCE_DIR}/fused_bias_gelu
     ${CMAKE_CURRENT_SOURCE_DIR}/swiglu
     ${CMAKE_CURRENT_SOURCE_DIR}/gemm_bias_gelu
+    ${CMAKE_CURRENT_SOURCE_DIR}/gemm_swiglu
 )
 
 target_link_libraries(cuda_operator_lab
