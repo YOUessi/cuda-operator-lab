@@ -365,6 +365,18 @@ class _Library:
         ]
         self.handle.cuda_operator_gemm_swiglu_v7.restype = ctypes.c_int
 
+        self.handle.cuda_operator_gemm_swiglu_v8.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+        ]
+        self.handle.cuda_operator_gemm_swiglu_v8.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -2493,6 +2505,74 @@ def gemm_swiglu_v7(
         dtype=torch.float32,
     )
     return gemm_swiglu_v7_into(
+        x_bf16,
+        gate_weight_bf16,
+        up_weight_bf16,
+        out,
+    )
+
+
+def gemm_swiglu_v8_into(
+    x_bf16: torch.Tensor,
+    gate_weight_bf16: torch.Tensor,
+    up_weight_bf16: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    """8-warp WMMA fused SwiGLU with shared A/B tile reuse."""
+    if not all(t.is_cuda for t in (x_bf16, gate_weight_bf16, up_weight_bf16, out)):
+        raise ValueError("GEMM SwiGLU V8 tensors must be CUDA tensors")
+    if x_bf16.ndim != 2 or gate_weight_bf16.ndim != 2 or up_weight_bf16.ndim != 2:
+        raise ValueError("x and weights must be 2-D")
+    if gate_weight_bf16.shape != up_weight_bf16.shape:
+        raise ValueError("gate and up weights must have the same shape")
+    if x_bf16.shape[1] != gate_weight_bf16.shape[1]:
+        raise ValueError("x.shape[1] must equal weight.shape[1]")
+    if any(t.dtype != torch.bfloat16 for t in (x_bf16, gate_weight_bf16, up_weight_bf16)):
+        raise TypeError("GEMM SwiGLU V8 expects BF16 input and weights")
+    if out.dtype != torch.float32:
+        raise TypeError("GEMM SwiGLU V8 output must be float32")
+    expected_out = (x_bf16.shape[0], gate_weight_bf16.shape[0])
+    if out.shape != expected_out:
+        raise ValueError(f"output shape must be {expected_out}")
+    if not all(t.is_contiguous() for t in (x_bf16, gate_weight_bf16, up_weight_bf16, out)):
+        raise ValueError("all GEMM SwiGLU V8 tensors must be contiguous")
+
+    m, k = x_bf16.shape
+    n = gate_weight_bf16.shape[0]
+    if m == 0 or n == 0:
+        return out
+    if (m % 32) != 0 or (k % 16) != 0 or (n % 64) != 0:
+        raise ValueError(
+            "GEMM SwiGLU V8 requires M multiple of 32, K multiple of 16, and N multiple of 64"
+        )
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x_bf16.device)
+    code = library.handle.cuda_operator_gemm_swiglu_v8(
+        ctypes.c_void_p(x_bf16.data_ptr()),
+        ctypes.c_void_p(gate_weight_bf16.data_ptr()),
+        ctypes.c_void_p(up_weight_bf16.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(m),
+        ctypes.c_uint64(k),
+        ctypes.c_uint64(n),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def gemm_swiglu_v8(
+    x_bf16: torch.Tensor,
+    gate_weight_bf16: torch.Tensor,
+    up_weight_bf16: torch.Tensor,
+) -> torch.Tensor:
+    out = torch.empty(
+        (x_bf16.shape[0], gate_weight_bf16.shape[0]),
+        device=x_bf16.device,
+        dtype=torch.float32,
+    )
+    return gemm_swiglu_v8_into(
         x_bf16,
         gate_weight_bf16,
         up_weight_bf16,
