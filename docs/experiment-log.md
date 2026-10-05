@@ -4449,3 +4449,69 @@ Artifacts:
 
 - reports/data/gemm_swiglu_v4_v7_v8_shared_ab_rtx4090.csv
 - reports/data/gemm_swiglu_v8_ptxas_sm89.txt
+
+## E44 — GEMM + SwiGLU V9: 8-way A reuse
+
+Status: **validated shape-dependent optimization**
+
+### Controlled change
+
+V7:
+
+```text
+4 warps/block
+16 x 64 output
+A reuse factor = 4
+```
+
+V9:
+
+```text
+8 warps/block
+16 x 128 output
+A reuse factor = 8
+```
+
+B remains direct global -> WMMA in both versions.
+
+### Validation
+
+```text
+full pytest: 799 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+ptxas: 48 registers/thread, 512 B shared, 0 spills
+```
+
+### Performance
+
+| M x K x N | V4 cuBLAS | V7 4-warp A reuse | V9 8-warp A reuse |
+|---:|---:|---:|---:|
+| 32 x 128 x 256 | 15.872 | 13.296 | 13.312 |
+| 128 x 512 x 512 | 18.432 | 23.552 | 25.600 |
+| 128 x 1024 x 4096 | 54.176 | 91.136 | 98.208 |
+| 512 x 1024 x 4096 | 174.080 | 342.768 | 334.144 |
+| 512 x 4096 x 4096 | 593.008 | 1537.024 | 1486.208 |
+
+### Interpretation
+
+Doubling A reuse is not free. The 256-thread block and eight simultaneous warp tiles reduce efficiency on smaller GEMMs.
+
+For very large GEMMs the extra reuse finally amortizes and gives a modest 2.6–3.4% improvement over V7, but both remain far behind cuBLAS.
+
+### Decision
+
+Stop blind tile enlargement.
+
+The next practical step is a hybrid runtime policy:
+
+- small launch-dominated shapes -> custom workspace-free WMMA (V7-style);
+- large throughput-dominated shapes -> cuBLAS BF16 packed V4.
+
+Before hardcoding the policy, perform a focused crossover sweep over small/medium M,K,N.
+
+Artifacts:
+
+- reports/data/gemm_swiglu_v4_v7_v9_shared_a8_rtx4090.csv
+- reports/data/gemm_swiglu_v9_ptxas_sm89.txt
