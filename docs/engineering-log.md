@@ -1082,3 +1082,51 @@ Final validation:
 - max observed error: 0.
 
 This case shows that even for a very simple pointwise MLP activation, vectorization is workload-dependent and should be promoted only when repeated measurements support it.
+
+## GEMM + Bias + GELU V0 — cuBLAS baseline
+
+This stage starts the GEMM/epilogue part of the project.
+
+V0 computes:
+
+```text
+Y = GELU(X @ W^T + bias)
+```
+
+with:
+
+- cuBLAS `SGEMM` for the matrix multiplication;
+- a custom in-place Bias + exact GELU epilogue kernel;
+- row-major tensors exposed through the existing C ABI;
+- runtime `dlopen("libcublas.so.12")` instead of a compile-time cuBLAS header dependency.
+
+The row-major layout is handled without explicit transpose buffers: `Y[M,N]` is treated as column-major `Y^T[N,M]`, and cuBLAS evaluates `W * X^T`.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **662 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- numerical error on tested shapes: 0;
+- epilogue ptxas: 16 registers/thread, 0 shared memory, 0 spills.
+
+Fair benchmark methodology:
+
+- our output is preallocated;
+- PyTorch baseline also uses preallocated `tmp` and `out`;
+- PyTorch path: `torch.mm(..., out=tmp) -> add_ -> aten.gelu.out`;
+- allocator cost is therefore excluded from the main comparison.
+
+Representative V0 versus preallocated PyTorch unfused:
+
+- 32 x 128 x 256: 19.200 us vs 17.408 us;
+- 128 x 512 x 512: 23.584 us vs 21.696 us;
+- 128 x 1024 x 4096: 80.896 us vs 79.616 us;
+- 512 x 1024 x 4096: 257.776 us vs 294.912 us;
+- 512 x 4096 x 4096: 938.768 us vs 1176.576 us.
+
+Conclusion: the cuBLAS integration is correct and competitive. Small GEMMs still pay extra epilogue/launch overhead; larger workloads already benefit from the explicit cuBLAS + custom epilogue path.
+
+Next: keep the same GEMM and vectorize only the Bias+GELU epilogue with float4.

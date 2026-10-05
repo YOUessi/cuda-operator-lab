@@ -119,3 +119,23 @@ def swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     if gate.dtype != torch.float32 or up.dtype != torch.float32:
         raise TypeError("swiglu currently supports float32 only")
     return torch.nn.functional.silu(gate) * up
+
+
+def gemm_bias_gelu(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    """Trusted float32 GEMM + bias + exact GELU reference."""
+    if x.ndim != 2 or weight.ndim != 2:
+        raise ValueError("x and weight must be 2-D")
+    if x.shape[1] != weight.shape[1]:
+        raise ValueError("x.shape[1] must equal weight.shape[1]")
+    if bias.ndim != 1 or bias.shape[0] != weight.shape[0]:
+        raise ValueError("bias length must equal weight.shape[0]")
+    if any(t.dtype != torch.float32 for t in (x, weight, bias)):
+        raise TypeError("gemm_bias_gelu currently supports float32 only")
+    return torch.nn.functional.gelu(
+        torch.matmul(x, weight.transpose(0, 1)) + bias,
+        approximate="none",
+    )
