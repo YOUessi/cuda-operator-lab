@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import gemm_bias_gelu_v0_into, gemm_bias_gelu_v1_into, gemm_bias_gelu_v2_into, gemm_bias_gelu_v3_into, gemm_bias_gelu_v4_into
+from cuda_operator_lab.bindings import gemm_bias_gelu_v0_into, gemm_bias_gelu_v1_into, gemm_bias_gelu_v2_into, gemm_bias_gelu_v3_into, gemm_bias_gelu_v4_into, gemm_bias_gelu_v5_into
 from cuda_operator_lab.references import gemm_bias_gelu, gemm_bias_gelu_tanh
 
 
@@ -72,6 +72,7 @@ def main() -> None:
             ("v2_cublaslt_fused", gemm_bias_gelu_v2_into),
             ("v3_cublaslt_cached", gemm_bias_gelu_v3_into),
             ("v4_cublaslt_heuristic", gemm_bias_gelu_v4_into),
+            ("v5_cublaslt_autotuned", gemm_bias_gelu_v5_into),
         ]
         torch_alloc = measure_us(
             lambda: gemm_bias_gelu(x, weight, bias),
@@ -102,6 +103,7 @@ def main() -> None:
                 "v2_cublaslt_fused",
                 "v3_cublaslt_cached",
                 "v4_cublaslt_heuristic",
+                "v5_cublaslt_autotuned",
             )
             expected = expected_tanh if is_tanh else expected_exact
             ref_median = tpt if is_tanh else tpe
