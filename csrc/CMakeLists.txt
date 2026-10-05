@@ -9,6 +9,7 @@ add_library(cuda_operator_lab SHARED
   fused_residual_layernorm/fused_residual_layernorm.cu
   fused_bias_gelu/fused_bias_gelu.cu
   swiglu/swiglu.cu
+  gemm_bias_gelu/gemm_bias_gelu.cu
 )
 
 target_include_directories(cuda_operator_lab
@@ -20,11 +21,13 @@ target_include_directories(cuda_operator_lab
     ${CMAKE_CURRENT_SOURCE_DIR}/fused_residual_layernorm
     ${CMAKE_CURRENT_SOURCE_DIR}/fused_bias_gelu
     ${CMAKE_CURRENT_SOURCE_DIR}/swiglu
+    ${CMAKE_CURRENT_SOURCE_DIR}/gemm_bias_gelu
 )
 
 target_link_libraries(cuda_operator_lab
   PRIVATE
     cuda_operator_common
+    ${CMAKE_DL_LIBS}
 )
 
 set_target_properties(cuda_operator_lab PROPERTIES
