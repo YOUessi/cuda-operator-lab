@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include <dlfcn.h>
+#include <memory>
+#include <tuple>
+#include <unordered_map>
 
 #include <cuda_runtime.h>
 
@@ -189,6 +192,7 @@ struct LtDescriptors {
   cublasLtMatrixLayout_t b = nullptr;
   cublasLtMatrixLayout_t c = nullptr;
   cublasLtMatrixLayout_t d = nullptr;
+  const float* bias = nullptr;
 
   ~LtDescriptors() {
     if (api == nullptr) {
@@ -201,6 +205,92 @@ struct LtDescriptors {
     if (op != nullptr) api->matmul_desc_destroy(op);
   }
 };
+
+
+struct LtPlanKey {
+  std::uint64_t m;
+  std::uint64_t k;
+  std::uint64_t n;
+
+  bool operator==(const LtPlanKey& other) const {
+    return m == other.m && k == other.k && n == other.n;
+  }
+};
+
+struct LtPlanKeyHash {
+  std::size_t operator()(const LtPlanKey& key) const {
+    std::size_t h = static_cast<std::size_t>(key.m);
+    h ^= static_cast<std::size_t>(key.k) + 0x9e3779b9U + (h << 6) + (h >> 2);
+    h ^= static_cast<std::size_t>(key.n) + 0x9e3779b9U + (h << 6) + (h >> 2);
+    return h;
+  }
+};
+
+std::unique_ptr<LtDescriptors> create_lt_plan(
+    CublasLtApi& api,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n) {
+  auto desc = std::make_unique<LtDescriptors>();
+  desc->api = &api;
+
+  if (api.matmul_desc_create(&desc->op, kCublasCompute32F, kCudaR32F) !=
+      kCublasSuccess) {
+    return nullptr;
+  }
+
+  const int trans_a = kCublasOpT;
+  const int trans_b = kCublasOpN;
+  const std::uint32_t epilogue = kLtEpilogueGeluBias;
+
+  if (api.matmul_desc_set_attribute(
+          desc->op, kLtDescTransA, &trans_a, sizeof(trans_a)) != kCublasSuccess ||
+      api.matmul_desc_set_attribute(
+          desc->op, kLtDescTransB, &trans_b, sizeof(trans_b)) != kCublasSuccess ||
+      api.matmul_desc_set_attribute(
+          desc->op, kLtDescEpilogue, &epilogue, sizeof(epilogue)) !=
+          kCublasSuccess) {
+    return nullptr;
+  }
+
+  if (api.matrix_layout_create(&desc->a, kCudaR32F, k, n, k) !=
+          kCublasSuccess ||
+      api.matrix_layout_create(&desc->b, kCudaR32F, k, m, k) !=
+          kCublasSuccess ||
+      api.matrix_layout_create(&desc->c, kCudaR32F, n, m, n) !=
+          kCublasSuccess ||
+      api.matrix_layout_create(&desc->d, kCudaR32F, n, m, n) !=
+          kCublasSuccess) {
+    return nullptr;
+  }
+
+  return desc;
+}
+
+LtDescriptors* cached_lt_plan(
+    CublasLtApi& api,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n) {
+  thread_local std::unordered_map<
+      LtPlanKey,
+      std::unique_ptr<LtDescriptors>,
+      LtPlanKeyHash> cache;
+
+  const LtPlanKey key{m, k, n};
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second.get();
+  }
+
+  auto plan = create_lt_plan(api, m, k, n);
+  if (!plan) {
+    return nullptr;
+  }
+  LtDescriptors* raw = plan.get();
+  cache.emplace(key, std::move(plan));
+  return raw;
+}
 
 __device__ __forceinline__ float gelu_exact(float x) {
   return 0.5F * x * (1.0F + erff(x * kInvSqrt2));
@@ -485,6 +575,72 @@ extern "C" int cuda_operator_gemm_bias_gelu_v2(
       desc.c,
       output,
       desc.d,
+      nullptr,
+      nullptr,
+      0,
+      cuda_stream);
+
+  if (status != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_bias_gelu_v3(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  const int validation =
+      validate_arguments(input, weight, bias, output, m, k, n);
+  if (validation != static_cast<int>(cudaSuccess) || m == 0 || n == 0) {
+    return validation;
+  }
+
+  auto& api = cublaslt_api();
+  if (!api.ready) {
+    return static_cast<int>(cudaErrorSharedObjectSymbolNotFound);
+  }
+
+  LtDescriptors* desc = cached_lt_plan(api, m, k, n);
+  if (desc == nullptr) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  if (desc->bias != bias) {
+    const void* bias_ptr = bias;
+    if (api.matmul_desc_set_attribute(
+            desc->op,
+            kLtDescBiasPointer,
+            &bias_ptr,
+            sizeof(bias_ptr)) != kCublasSuccess) {
+      return static_cast<int>(cudaErrorUnknown);
+    }
+    desc->bias = bias;
+  }
+
+  const float alpha = 1.0F;
+  const float beta = 0.0F;
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  const cublasStatus_t status = api.matmul(
+      api.handle,
+      desc->op,
+      &alpha,
+      weight,
+      desc->a,
+      input,
+      desc->b,
+      &beta,
+      output,
+      desc->c,
+      output,
+      desc->d,
       nullptr,
       nullptr,
       0,
