@@ -10,7 +10,7 @@ import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
 from cuda_operator_lab.bindings import gemm_swiglu_v0_into, gemm_swiglu_v1_into, gemm_swiglu_v2_into
-from cuda_operator_lab.references import gemm_swiglu
+from cuda_operator_lab.references import gemm_swiglu, gemm_swiglu_packed
 
 
 DEFAULT_SHAPES = [
@@ -145,9 +145,10 @@ def main() -> None:
         packed_actual = gemm_swiglu_v2_into(
             x, packed_w, packed_workspace, packed_output
         )
+        packed_expected = gemm_swiglu_packed(x, packed_w)
         torch.cuda.synchronize()
         packed_max_abs = (
-            float((packed_actual - expected).abs().max().item())
+            float((packed_actual - packed_expected).abs().max().item())
             if packed_output.numel()
             else 0.0
         )
