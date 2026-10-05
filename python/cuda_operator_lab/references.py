@@ -159,3 +159,22 @@ def gemm_bias_gelu_tanh(
         torch.matmul(x, weight.transpose(0, 1)) + bias,
         approximate="tanh",
     )
+
+
+def gemm_swiglu(
+    x: torch.Tensor,
+    gate_weight: torch.Tensor,
+    up_weight: torch.Tensor,
+) -> torch.Tensor:
+    """Trusted float32 dual-GEMM SwiGLU reference."""
+    if x.ndim != 2 or gate_weight.ndim != 2 or up_weight.ndim != 2:
+        raise ValueError("x, gate_weight, and up_weight must be 2-D")
+    if gate_weight.shape != up_weight.shape:
+        raise ValueError("gate_weight and up_weight must have the same shape")
+    if x.shape[1] != gate_weight.shape[1]:
+        raise ValueError("x.shape[1] must equal weight.shape[1]")
+    if any(t.dtype != torch.float32 for t in (x, gate_weight, up_weight)):
+        raise TypeError("gemm_swiglu currently supports float32 only")
+    gate = torch.matmul(x, gate_weight.transpose(0, 1))
+    up = torch.matmul(x, up_weight.transpose(0, 1))
+    return torch.nn.functional.silu(gate) * up
