@@ -3862,3 +3862,68 @@ Selected timing:
 The result confirms the final activation kernel is not the dominant bottleneck.
 
 Next experiment: pack gate/up weights into one [2N,K] matrix and replace two SGEMMs with one larger SGEMM, then split the packed projection inside the SwiGLU kernel.
+
+## E36 — GEMM + SwiGLU V2: packed single projection
+
+Status: **validated architectural optimization**
+
+### Hypothesis
+
+Two independent GEMM launches dominate GEMM+SwiGLU. Pack static gate/up weights:
+
+```text
+W_packed = [W_gate; W_up] in R^(2N x K)
+```
+
+and compute both projections with one wider SGEMM.
+
+### API / benchmark policy
+
+V2 accepts prepacked weight directly.
+
+Packing cost is excluded from steady-state benchmark because transformer weights are static and can be packed once at model initialization.
+
+Workspace changes from one `[M,N]` temporary to one `[M,2N]` packed projection.
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 738 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+ptxas for packed split/SwiGLU kernel:
+
+```text
+18 registers/thread
+0 B shared memory
+0 spills
+```
+
+### Correctness nuance
+
+V2 is tested against two references:
+
+1. strict packed single-GEMM PyTorch reference;
+2. original dual-GEMM mathematical reference with FP32-tolerant bounds.
+
+The packed projection and final output match PyTorch's packed path exactly in the investigated large case. Differences versus the dual-GEMM path come from GEMM accumulation order rather than split indexing.
+
+### Performance
+
+| M x K x N | V0 two GEMM | V1 two GEMM + float4 post | V2 packed GEMM | PyTorch packed |
+|---:|---:|---:|---:|---:|
+| 32 x 128 x 256 | 27.648 | 28.336 | 16.624 | 19.456 |
+| 128 x 512 x 512 | 35.840 | 35.856 | 27.648 | 26.624 |
+| 128 x 1024 x 4096 | 154.096 | 165.888 | 137.216 | 121.888 |
+| 512 x 1024 x 4096 | 592.896 | 567.264 | 495.616 | 494.592 |
+| 512 x 4096 x 4096 | 2486.272 | 2479.104 | 2241.024 | 2247.648 |
+
+### Decision
+
+Packed projection is a real architectural improvement and should replace the two-GEMM baseline where weights can be prepacked.
+
+Next experiment: keep the packed single GEMM unchanged and vectorize only the packed split/SwiGLU post-kernel to isolate remaining post-processing overhead.

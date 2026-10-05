@@ -178,3 +178,23 @@ def gemm_swiglu(
     gate = torch.matmul(x, gate_weight.transpose(0, 1))
     up = torch.matmul(x, up_weight.transpose(0, 1))
     return torch.nn.functional.silu(gate) * up
+
+
+def gemm_swiglu_packed(
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
+) -> torch.Tensor:
+    """Trusted packed single-GEMM SwiGLU reference."""
+    if x.ndim != 2 or packed_weight.ndim != 2:
+        raise ValueError("x and packed_weight must be 2-D")
+    if x.shape[1] != packed_weight.shape[1]:
+        raise ValueError("x.shape[1] must equal packed_weight.shape[1]")
+    if packed_weight.shape[0] % 2 != 0:
+        raise ValueError("packed_weight.shape[0] must be even")
+    if x.dtype != torch.float32 or packed_weight.dtype != torch.float32:
+        raise TypeError("gemm_swiglu_packed currently supports float32 only")
+    packed = torch.matmul(x, packed_weight.transpose(0, 1))
+    n = packed_weight.shape[0] // 2
+    gate = packed[:, :n]
+    up = packed[:, n:]
+    return torch.nn.functional.silu(gate) * up

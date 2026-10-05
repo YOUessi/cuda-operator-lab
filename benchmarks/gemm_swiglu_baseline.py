@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import gemm_swiglu_v0_into, gemm_swiglu_v1_into
+from cuda_operator_lab.bindings import gemm_swiglu_v0_into, gemm_swiglu_v1_into, gemm_swiglu_v2_into
 from cuda_operator_lab.references import gemm_swiglu
 
 
@@ -57,6 +57,9 @@ def main() -> None:
         gate_tmp = torch.empty_like(workspace)
         up_tmp = torch.empty_like(workspace)
         torch_out = torch.empty_like(workspace)
+        packed_weight = torch.cat((gate_w, up_w), dim=0).contiguous()
+        packed_tmp = torch.empty(m, 2 * n, device="cuda", dtype=torch.float32)
+        packed_out = torch.empty(m, n, device="cuda", dtype=torch.float32)
 
         expected = gemm_swiglu(x, gate_w, up_w)
         actual = gemm_swiglu_v0_into(x, gate_w, up_w, workspace, out)
@@ -73,8 +76,20 @@ def main() -> None:
             ("v0_scalar_post", gemm_swiglu_v0_into),
             ("v1_float4_post", gemm_swiglu_v1_into),
         ]
+        def torch_packed_preallocated() -> None:
+            torch.mm(x, packed_weight.transpose(0, 1), out=packed_tmp)
+            gate_view = packed_tmp[:, :n]
+            up_view = packed_tmp[:, n:]
+            torch.ops.aten.silu.out(gate_view, out=packed_out)
+            packed_out.mul_(up_view)
+
         torch_pre = measure_us(
             torch_preallocated,
+            warmup=args.warmup,
+            repeats=args.repeats,
+        )
+        torch_packed = measure_us(
+            torch_packed_preallocated,
             warmup=args.warmup,
             repeats=args.repeats,
         )
@@ -85,6 +100,7 @@ def main() -> None:
         )
 
         tp, _, tp95 = summarize(torch_pre)
+        tpack, _, tpack95 = summarize(torch_packed)
         ta, _, ta95 = summarize(torch_alloc)
 
         for name, fn in variants:
@@ -117,11 +133,65 @@ def main() -> None:
                 "ours_p95_us": op95,
                 "torch_prealloc_median_us": tp,
                 "torch_prealloc_p95_us": tp95,
+                "torch_packed_median_us": tpack,
+                "torch_packed_p95_us": tpack95,
                 "torch_alloc_median_us": ta,
                 "torch_alloc_p95_us": ta95,
                 "ratio_vs_torch_prealloc": om / tp if tp else None,
+                "ratio_vs_torch_packed": om / tpack if tpack else None,
                 "max_abs_error": max_abs,
             })
+
+
+        packed_workspace = torch.empty(
+            (m, 2 * n), device="cuda", dtype=torch.float32
+        )
+        packed_output = torch.empty(
+            (m, n), device="cuda", dtype=torch.float32
+        )
+        actual_v2 = gemm_swiglu_v2_into(
+            x, packed_weight, packed_workspace, packed_output
+        )
+        torch.cuda.synchronize()
+        max_abs_v2 = (
+            float((actual_v2 - expected).abs().max().item())
+            if packed_output.numel()
+            else 0.0
+        )
+        v2_samples = measure_us(
+            lambda: gemm_swiglu_v2_into(
+                x, packed_weight, packed_workspace, packed_output
+            ),
+            warmup=args.warmup,
+            repeats=args.repeats,
+        )
+        v2m, _, v2p95 = summarize(v2_samples)
+
+        print(
+            f"{m}x{k}x{n} v2_packed_gemm={v2m:.3f} us "
+            f"torch_two_gemm={tp:.3f} us "
+            f"torch_packed={tpack:.3f} us "
+            f"ratio_two={v2m/tp:.3f}x "
+            f"ratio_packed={v2m/tpack:.3f}x "
+            f"max_abs={max_abs_v2:.3e}"
+        )
+        records.append({
+            "m": m,
+            "k": k,
+            "n": n,
+            "variant": "v2_packed_gemm",
+            "ours_median_us": v2m,
+            "ours_p95_us": v2p95,
+            "torch_prealloc_median_us": tp,
+            "torch_prealloc_p95_us": tp95,
+            "torch_packed_median_us": tpack,
+            "torch_packed_p95_us": tpack95,
+            "torch_alloc_median_us": ta,
+            "torch_alloc_p95_us": ta95,
+            "ratio_vs_torch_prealloc": v2m / tp if tp else None,
+            "ratio_vs_torch_packed": v2m / tpack if tpack else None,
+            "max_abs_error": max_abs_v2,
+        })
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8") as f:

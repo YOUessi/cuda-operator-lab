@@ -1324,3 +1324,55 @@ Representative total latency:
 - 512 x 4096 x 4096: 2474.576 us -> 2516.800 us.
 
 Conclusion: once two GEMMs dominate, vectorizing the final activation cannot materially improve end-to-end latency and may regress due to higher register pressure. The next optimization should reduce the number/cost of GEMMs themselves.
+
+## GEMM + SwiGLU V2 packed single-GEMM projection
+
+V2 changes the projection architecture rather than the final pointwise kernel.
+
+Baseline V0/V1:
+
+```text
+SGEMM(X, W_gate^T) -> gate[M,N]
+SGEMM(X, W_up^T)   -> up[M,N]
+SwiGLU(gate, up)
+```
+
+V2:
+
+```text
+packed_weight = concat(W_gate, W_up) -> [2N,K]   # prepacked once
+SGEMM(X, packed_weight^T) -> packed[M,2N]
+split packed row into gate/up halves
+SwiGLU(gate, up) -> output[M,N]
+```
+
+Weight packing is intentionally outside steady-state timing because model weights are static and can be prepacked at initialization.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full repository suite: **738 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- packed split kernel ptxas: 18 registers/thread, 0 shared memory, 0 spills.
+
+Numerical finding:
+
+The packed V2 workspace and output are bit-identical to a PyTorch single packed `torch.mm` path. They can differ from the original two-independent-GEMM reference because one [2N,K] SGEMM may use a different FP32 accumulation/tiling schedule than two [N,K] SGEMMs.
+
+For 512 x 4096 x 4096:
+
+- V2 packed vs PyTorch packed workspace: max diff 0;
+- V2 packed vs PyTorch packed final SwiGLU: max diff 0;
+- packed vs two-GEMM final output can differ in absolute value on large-magnitude outputs; the largest observed output magnitude was ~5.3e4.
+
+Representative performance:
+
+- 32 x 128 x 256: 27.648 us (two GEMM V0) -> 16.624 us packed V2;
+- 128 x 512 x 512: 35.840 us -> 27.648 us;
+- 128 x 1024 x 4096: 154.096 us -> 137.216 us;
+- 512 x 1024 x 4096: 592.896 us -> 495.616 us;
+- 512 x 4096 x 4096: 2486.272 us -> 2241.024 us.
+
+Compared with PyTorch's own single packed GEMM path, V2 is competitive: sometimes faster at small shapes, near-equal on large shapes, and slower on some middle shapes. This confirms the architectural win comes primarily from replacing two GEMMs with one wider GEMM rather than from the post-kernel.
