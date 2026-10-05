@@ -10,6 +10,7 @@ add_library(cuda_operator_lab SHARED
   fused_bias_gelu/fused_bias_gelu.cu
   swiglu/swiglu.cu
   gemm_bias_gelu/gemm_bias_gelu.cu
+  gemm_bias_gelu/gemm_bias_gelu_lt.cu
 )
 
 target_include_directories(cuda_operator_lab
