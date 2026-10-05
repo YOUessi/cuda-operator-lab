@@ -1674,3 +1674,38 @@ Performance is a strong regression versus V7:
 Conclusion: B reuse factor 2 is not worth cooperative scalar staging plus shared-memory store/load and synchronization. Global/L1/L2 access to B is already preferable at this stage.
 
 Next: keep B direct-to-WMMA and increase only A reuse from four to eight N-warps using a 16x128 output block tile.
+
+## GEMM + SwiGLU V9 8-warp shared-A tiling
+
+V9 keeps the positive V7 mechanism (shared A only, direct B loads) but increases A reuse from four to eight N-warps.
+
+Tile:
+
+```text
+16 rows x 128 columns
+8 warps/block
+one 16x16 A tile in 512 B shared memory
+eight 16-column warps reuse the same A tile
+B gate/up fragments load directly from global memory
+```
+
+Validation:
+
+- clean build: PASS;
+- full suite: **799 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 48 registers/thread, 512 B shared memory/block, 0 spills.
+
+V7 -> V9:
+
+- 32 x 128 x 256: 13.296 -> 13.312 us, neutral;
+- 128 x 512 x 512: 23.552 -> 25.600 us, regression;
+- 128 x 1024 x 4096: 91.136 -> 98.208 us, regression;
+- 512 x 1024 x 4096: 342.768 -> 334.144 us (~1.026x);
+- 512 x 4096 x 4096: 1537.024 -> 1486.208 us (~1.034x).
+
+Conclusion: higher A reuse becomes worthwhile only for sufficiently large work. The larger 256-thread block reduces efficiency for small/medium GEMMs, while large GEMMs recover a modest 2–3% gain.
+
+This reinforces a shape-regime strategy rather than a single custom tile. Small GEMMs can benefit from workspace-free fused WMMA; large GEMMs should stay on cuBLAS until a substantially better custom pipeline exists.
