@@ -110,3 +110,12 @@ def fused_bias_gelu(
     if x.dtype != torch.float32 or bias.dtype != torch.float32:
         raise TypeError("fused_bias_gelu currently supports float32 only")
     return torch.nn.functional.gelu(x + bias, approximate="none")
+
+
+def swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+    """Trusted float32 SwiGLU reference."""
+    if gate.shape != up.shape:
+        raise ValueError("gate and up must have the same shape")
+    if gate.dtype != torch.float32 or up.dtype != torch.float32:
+        raise TypeError("swiglu currently supports float32 only")
+    return torch.nn.functional.silu(gate) * up
