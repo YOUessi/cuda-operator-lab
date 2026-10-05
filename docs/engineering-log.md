@@ -1154,3 +1154,102 @@ Representative V0 -> V1:
 - 512 x 4096 x 4096: 1157.120 us -> 1155.072 us.
 
 Conclusion: once GEMM dominates runtime, optimizing a second standalone epilogue kernel yields only marginal gains. The next optimization must remove that kernel launch entirely by using a true fused GEMM epilogue.
+
+## GEMM + Bias + GELU: true cuBLASLt epilogue fusion
+
+The GEMM case study extends the earlier V0/V1 two-kernel design into real cuBLASLt epilogue fusion.
+
+### Semantic split
+
+V0/V1 use exact-erf GELU.
+
+cuBLASLt's `GELU_BIAS` epilogue uses tanh-approximate GELU. Therefore V2+ are validated and benchmarked only against a matching PyTorch `approximate="tanh"` reference. Exact and tanh paths are not silently dispatched between each other.
+
+### V2 — true fused cuBLASLt matmul
+
+V2 dynamically loads `libcublasLt.so.12` and executes a single `cublasLtMatmul` with `GELU_BIAS` epilogue. No separate Bias/GELU kernel is launched.
+
+The machine has the CUDA 12.8 cuBLASLt runtime but no development headers, so the implementation uses a minimal documented ABI subset through `dlopen/dlsym`.
+
+Validation:
+
+- clean build: PASS;
+- full suite after semantic correction: 680 passed;
+- memcheck/racecheck/synccheck: clean;
+- tanh-semantic numerical error generally in the ~1e-6 to 1e-4 range depending on GEMM algorithm/order.
+
+Representative semantic-fair timing:
+
+- 32 x 128 x 256: 16.224 us vs PyTorch tanh preallocated 19.456 us;
+- 512 x 1024 x 4096: 281.440 us vs 294.912 us;
+- 512 x 4096 x 4096: 1148.416 us vs 1189.328 us;
+- 128 x 1024 x 4096: 98.304 us vs 79.008 us (regression).
+
+### V3 — descriptor/plan cache
+
+V3 caches matmul and matrix-layout descriptors per `(M,K,N)`.
+
+Result: descriptor lifecycle is measurable but not the main source of the medium-shape regression.
+
+Examples:
+
+- 512 x 1024 x 4096 improves by several microseconds;
+- 512 x 4096 x 4096 can improve materially in some runs;
+- 128 x 1024 x 4096 remains poor.
+
+### V4 — explicit heuristic + workspace
+
+V4 adds `cublasLtMatmulAlgoGetHeuristic` and allows up to 32 MiB workspace.
+
+This recovers the problematic medium shape substantially:
+
+- 128 x 1024 x 4096: roughly 99 us -> ~84 us.
+
+But heuristic rank 0 is not universally best; for 512 x 4096 x 4096 it can be worse than implicit selection.
+
+### V5 — simple online autotune
+
+V5 benchmarks up to eight cuBLASLt heuristic candidates on first use and caches the fastest.
+
+It can find strong kernels:
+
+- 32 x 128 x 256: ~14–15 us;
+- 128 x 512 x 512: ~18–20 us;
+- 512 x 1024 x 4096: ~266–272 us in favorable runs.
+
+However the first implementation used too few timing samples, causing unstable selection for large GEMMs.
+
+First-use cost was also substantial:
+
+- small shape: tens of milliseconds in the worst cold process;
+- medium/large shapes: several milliseconds.
+
+### V6 — robust interleaved autotune
+
+V6 first warms every candidate, then performs five rounds with rotating candidate order and selects by median latency.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **712 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors.
+
+Independent-process behavior:
+
+- 32 x 128 x 256: stable ~15 us and clearly faster than matching PyTorch;
+- 128 x 512 x 512: ~19–20.5 us and competitive/faster;
+- 512 x 1024 x 4096: ~271–290 us, usually competitive/faster;
+- 512 x 4096 x 4096: ~1166–1167 us in independent V6 runs, avoiding V5's ~1220 us bad selections;
+- 128 x 1024 x 4096 remains workload/operating-state sensitive and may still trail PyTorch slightly.
+
+Robust autotune first-use cost:
+
+- 32 x 128 x 256: ~48 ms;
+- 128 x 512 x 512: ~1.1 ms;
+- 128 x 1024 x 4096: ~3.6 ms;
+- 512 x 1024 x 4096: ~11.3 ms;
+- 512 x 4096 x 4096: ~53.7 ms.
+
+Conclusion: V6 is appropriate for repeated fixed-shape workloads where one-time tuning is amortized. It is not an unconditional one-shot default. This mirrors production GEMM runtimes: algorithm selection is itself part of the performance problem.
