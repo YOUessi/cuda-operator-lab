@@ -176,6 +176,31 @@ __global__ void swiglu_packed_split_kernel(
   }
 }
 
+__global__ void swiglu_packed_split_float4_kernel(
+    const float4* packed4,
+    float4* output4,
+    std::uint64_t m,
+    std::uint64_t vec_n) {
+  const std::uint64_t vec_elements = m * vec_n;
+  const std::uint64_t packed_vec_cols = 2ULL * vec_n;
+  for (std::uint64_t idx4 =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       idx4 < vec_elements;
+       idx4 += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const std::uint64_t row = idx4 / vec_n;
+    const std::uint64_t col4 = idx4 - row * vec_n;
+    const std::uint64_t base4 = row * packed_vec_cols;
+    const float4 g = packed4[base4 + col4];
+    const float4 u = packed4[base4 + vec_n + col4];
+    float4 y;
+    y.x = silu(g.x) * u.x;
+    y.y = silu(g.y) * u.y;
+    y.z = silu(g.z) * u.z;
+    y.w = silu(g.w) * u.w;
+    output4[idx4] = y;
+  }
+}
+
 int validate_packed_arguments(
     const float* input,
     const float* packed_weight,
@@ -341,6 +366,68 @@ extern "C" int cuda_operator_gemm_swiglu_v2(
           api, input, packed_weight, workspace, mi, ki, packed_n) !=
       kCublasSuccess) {
     return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const std::uint64_t elements = m * n;
+  const unsigned int blocks = static_cast<unsigned int>(
+      (elements + kThreads - 1) / kThreads);
+  const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
+  swiglu_packed_split_kernel<<<capped_blocks, kThreads, 0, cuda_stream>>>(
+      workspace, output, m, n);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_swiglu_v3(
+    const float* input,
+    const float* packed_weight,
+    float* workspace,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  const int validation = validate_packed_arguments(
+      input, packed_weight, workspace, output, m, k, n);
+  if (validation != static_cast<int>(cudaSuccess) || m == 0 || n == 0) {
+    return validation;
+  }
+
+  auto& api = cublas_api();
+  if (!api.ready) return static_cast<int>(cudaErrorSharedObjectSymbolNotFound);
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  if (api.set_stream(api.handle, cuda_stream) != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const int mi = static_cast<int>(m);
+  const int ki = static_cast<int>(k);
+  const int packed_n = static_cast<int>(2ULL * n);
+
+  if (row_major_gemm(
+          api, input, packed_weight, workspace, mi, ki, packed_n) !=
+      kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const bool aligned =
+      (reinterpret_cast<std::uintptr_t>(workspace) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(output) % alignof(float4) == 0);
+
+  if ((n % 4 == 0) && aligned) {
+    const std::uint64_t vec_n = n / 4;
+    const std::uint64_t vec_elements = m * vec_n;
+    const unsigned int blocks = static_cast<unsigned int>(
+        (vec_elements + kThreads - 1) / kThreads);
+    const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
+    swiglu_packed_split_float4_kernel<<<
+        capped_blocks, kThreads, 0, cuda_stream>>>(
+            reinterpret_cast<const float4*>(workspace),
+            reinterpret_cast<float4*>(output),
+            m,
+            vec_n);
+    return static_cast<int>(cudaGetLastError());
   }
 
   const std::uint64_t elements = m * n;
