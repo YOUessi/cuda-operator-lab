@@ -1408,3 +1408,47 @@ Representative V2 -> V3:
 - 512 x 4096 x 4096: 2358.128 us -> 2240.640 us (~1.052x).
 
 Conclusion: after packing the two GEMMs into one, the post-kernel is no longer a consistent bottleneck. Vectorization is only useful for selected shapes. A final dispatcher should be based on direct V2/V3 repeated profiling.
+
+## GEMM + SwiGLU V4 dispatch decision: no dispatcher promoted
+
+A stable direct V2/V3 profile was run before adding any V4 runtime dispatcher.
+
+Method:
+
+- V2 and V3 use the same prepacked [2N,K] single SGEMM;
+- the only difference is scalar vs float4 packed split/SwiGLU post-kernel;
+- 128 MiB cache-flush buffer before every timed call;
+- V2/V3 interleaved at the individual-sample level;
+- randomized/reversed order;
+- 5 independent rounds x 30 samples;
+- repeated with two independent seeds.
+
+Acceptance rule remained the project's conservative standard:
+
+```text
+V3 may enter a dispatcher only if
+V2 / V3 >= 1.05x
+in every independent run.
+```
+
+No measured shape passed.
+
+Two-seed speedups:
+
+- 32 x 128 x 256: 0.990x / 0.968x;
+- 128 x 512 x 512: 0.979x / 0.999x;
+- 128 x 1024 x 4096: 1.015x / 1.014x;
+- 256 x 1024 x 4096: 1.006x / 1.007x;
+- 512 x 1024 x 4096: 1.002x / 1.004x;
+- 256 x 4096 x 4096: 1.006x / 1.006x;
+- 512 x 4096 x 4096: 1.002x / 1.031x.
+
+Decision:
+
+- **V2 packed single-GEMM + scalar split remains the default architecture**;
+- V3 float4 post-kernel remains a validated experiment;
+- no V4 runtime dispatcher is added.
+
+This is the correct stopping point for post-kernel tuning. Once gate/up projections are packed into one GEMM, total latency is GEMM-dominated and the post-kernel contributes too little to justify additional shape policy complexity.
+
+The next optimization layer should target the GEMM itself: Tensor Core data types, CUTLASS/custom mainloop, or a true dual-output/fused SwiGLU GEMM that avoids materializing the full [M,2N] workspace.

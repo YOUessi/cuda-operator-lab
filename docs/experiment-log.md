@@ -3982,3 +3982,81 @@ Representative timings:
 Do not promote V3 universally. The architectural gain came from one packed GEMM; post-kernel float4 is secondary and shape-dependent.
 
 Next: stable direct V2/V3 profile and a conservative dispatcher.
+
+## E38 — GEMM + SwiGLU V2/V3 stable profile: stop post-kernel tuning
+
+Status: **validated negative dispatcher result**
+
+### Question
+
+Does V3 float4 post-processing provide enough stable benefit over V2 scalar post-processing to justify a shape dispatcher?
+
+### Method
+
+Direct V2/V3 comparison only:
+
+```text
+same packed [2N,K] weight
+same single SGEMM
+same [M,2N] workspace
+same SwiGLU math
+only scalar vs float4 split/post differs
+```
+
+Profiling:
+
+```text
+L2 flush: 128 MiB before every launch
+rounds: 5
+samples/round/variant: 30
+sample-level interleaving
+two independent seeds
+acceptance gate: >=1.05x in both runs
+```
+
+### Results
+
+| M x K x N | Seed 1 V2/V3 | Seed 2 V2/V3 |
+|---:|---:|---:|
+| 32 x 128 x 256 | 0.990x | 0.968x |
+| 128 x 512 x 512 | 0.979x | 0.999x |
+| 128 x 1024 x 4096 | 1.015x | 1.014x |
+| 256 x 1024 x 4096 | 1.006x | 1.007x |
+| 512 x 1024 x 4096 | 1.002x | 1.004x |
+| 256 x 4096 x 4096 | 1.006x | 1.006x |
+| 512 x 4096 x 4096 | 1.002x | 1.031x |
+
+No shape passes the 5% repeated-evidence gate.
+
+### Decision
+
+Do **not** add GEMM+SwiGLU V4 dispatcher.
+
+Promote the architecture result instead:
+
+```text
+two independent GEMMs
+    -> packed single GEMM
+```
+
+is the meaningful optimization.
+
+```text
+scalar post
+    -> float4 post
+```
+
+is secondary and not stable enough to warrant runtime policy.
+
+Final state:
+
+- V2 = default packed single-GEMM path;
+- V3 = validated experimental float4 post path;
+- post-kernel tuning stops here.
+
+Artifacts:
+
+- `reports/data/gemm_swiglu_stable_v2_v3_seed1_rtx4090.csv`
+- `reports/data/gemm_swiglu_stable_v2_v3_seed2_rtx4090.csv`
+
+Next research target: eliminate or reduce the materialized [M,2N] projection using CUTLASS/custom Tensor Core fusion, or change GEMM precision/layout to exploit Tensor Cores more directly.
