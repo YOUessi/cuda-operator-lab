@@ -1922,13 +1922,14 @@ def gemm_swiglu_v0_into(
         raise TypeError("GEMM SwiGLU currently supports float32 only")
     if not all(t.is_contiguous() for t in (x, gate_weight, up_weight, workspace, out)):
         raise ValueError("all GEMM SwiGLU tensors must be contiguous")
-    if workspace.data_ptr() == out.data_ptr():
-        raise ValueError("workspace and output must not alias")
 
     m, k = x.shape
     n = gate_weight.shape[0]
     if m == 0 or n == 0:
         return out
+
+    if workspace.data_ptr() == out.data_ptr():
+        raise ValueError("workspace and output must not alias")
 
     library = _library()
     stream = torch.cuda.current_stream(device=x.device)
