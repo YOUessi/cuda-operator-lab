@@ -1633,3 +1633,44 @@ The tiny 32 x 128 x 256 case remains faster than cuBLAS: 13.200 us vs 14.416 us.
 V7 remains slower than cuBLAS for larger GEMMs, showing that A reuse alone is insufficient. The next redundant traffic is B: the same weight tile is reloaded by every 16-row M block.
 
 Next: V8 uses an 8-warp 32x64 block tile, sharing both two A row tiles and the gate/up B tiles across row/column warp groups.
+
+## GEMM + SwiGLU V8 shared A+B staging
+
+V8 tested whether extending V7's shared-memory reuse to both operands improves the workspace-free WMMA path.
+
+Tile:
+
+```text
+32 rows x 64 columns
+8 warps/block
+2 row groups x 4 column groups
+```
+
+Per K-step:
+
+- two 16x16 A tiles are staged in shared memory;
+- four 16x16 gate-weight tiles are staged;
+- four 16x16 up-weight tiles are staged;
+- A is reused across four column warps;
+- each B tile is reused across two row warps.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **790 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 40 registers/thread, 5120 B shared memory/block, 0 spills.
+
+Performance is a strong regression versus V7:
+
+- 32 x 128 x 256: 13.008 -> 28.672 us;
+- 128 x 512 x 512: 23.552 -> 88.064 us;
+- 128 x 1024 x 4096: 91.136 -> 209.920 us;
+- 512 x 1024 x 4096: 342.688 -> 600.352 us;
+- 512 x 4096 x 4096: 1567.616 -> 2994.176 us.
+
+Conclusion: B reuse factor 2 is not worth cooperative scalar staging plus shared-memory store/load and synchronization. Global/L1/L2 access to B is already preferable at this stage.
+
+Next: keep B direct-to-WMMA and increase only A reuse from four to eight N-warps using a 16x128 output block tile.
