@@ -4379,3 +4379,73 @@ Artifacts:
 
 - reports/data/gemm_swiglu_v4_v6_v7_shared_a_rtx4090.csv
 - reports/data/gemm_swiglu_v7_ptxas_sm89.txt
+
+## E43 — GEMM + SwiGLU V8: shared A+B staging
+
+Status: **validated negative experiment**
+
+### Hypothesis
+
+V7 proved A-tile reuse is valuable. V8 tested whether sharing B weight tiles across two M-row groups would provide another improvement.
+
+### Tile
+
+```text
+8 warps/block
+block output tile: 32 x 64
+shared A:  2 x (16x16)
+shared gate B: 4 x (16x16)
+shared up B:   4 x (16x16)
+total shared: 5120 B
+```
+
+### Validation
+
+```text
+full pytest: 790 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+ptxas: 40 registers/thread, 5120 B shared, 0 spills
+```
+
+### Performance
+
+| M x K x N | V4 cuBLAS | V7 shared A | V8 shared A+B |
+|---:|---:|---:|---:|
+| 32 x 128 x 256 | 15.008 | 13.008 | 28.672 |
+| 128 x 512 x 512 | 18.192 | 23.552 | 88.064 |
+| 128 x 1024 x 4096 | 53.248 | 91.136 | 209.920 |
+| 512 x 1024 x 4096 | 174.080 | 342.688 | 600.352 |
+| 512 x 4096 x 4096 | 599.040 | 1567.616 | 2994.176 |
+
+### Interpretation
+
+The result rejects a naive assumption that more shared-memory reuse is automatically better.
+
+B is reused only twice, while staging introduces:
+
+- 2048 additional B values per K-step;
+- global -> register -> shared traffic;
+- shared -> WMMA traffic;
+- synchronization;
+- branch/index arithmetic in the cooperative loading loop.
+
+This overhead overwhelms the avoided duplicate B loads.
+
+### Next action
+
+V9 returns B to direct global WMMA loads and changes only A reuse:
+
+```text
+8 warps/block
+16 x 128 output tile
+one 16x16 A tile shared by eight N-warps
+```
+
+This preserves the positive V7 mechanism without the costly B staging.
+
+Artifacts:
+
+- reports/data/gemm_swiglu_v4_v7_v8_shared_ab_rtx4090.csv
+- reports/data/gemm_swiglu_v8_ptxas_sm89.txt

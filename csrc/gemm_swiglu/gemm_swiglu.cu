@@ -546,6 +546,137 @@ __global__ void gemm_swiglu_v7_shared_a_kernel(
   (void)lane;
 }
 
+__global__ void gemm_swiglu_v8_shared_ab_kernel(
+    const __nv_bfloat16* input,
+    const __nv_bfloat16* gate_weight,
+    const __nv_bfloat16* up_weight,
+    float* output,
+    int m,
+    int k,
+    int n) {
+  using namespace nvcuda;
+
+  __shared__ __nv_bfloat16 shared_a[2 * 16 * 16];
+  __shared__ __nv_bfloat16 shared_gate[4 * 16 * 16];
+  __shared__ __nv_bfloat16 shared_up[4 * 16 * 16];
+
+  const int warp_id = static_cast<int>(threadIdx.x) / 32;
+  const int row_group = warp_id / 4;
+  const int col_group = warp_id - row_group * 4;
+
+  const int block_m = static_cast<int>(blockIdx.y) * 32;
+  const int block_n = static_cast<int>(blockIdx.x) * 64;
+  const int tile_m = block_m + row_group * 16;
+  const int tile_n = block_n + col_group * 16;
+
+  wmma::fragment<
+      wmma::matrix_a,
+      16,
+      16,
+      16,
+      __nv_bfloat16,
+      wmma::row_major> a_frag;
+  wmma::fragment<
+      wmma::matrix_b,
+      16,
+      16,
+      16,
+      __nv_bfloat16,
+      wmma::col_major> gate_frag;
+  wmma::fragment<
+      wmma::matrix_b,
+      16,
+      16,
+      16,
+      __nv_bfloat16,
+      wmma::col_major> up_frag;
+  wmma::fragment<
+      wmma::accumulator,
+      16,
+      16,
+      16,
+      float> gate_acc;
+  wmma::fragment<
+      wmma::accumulator,
+      16,
+      16,
+      16,
+      float> up_acc;
+
+  wmma::fill_fragment(gate_acc, 0.0F);
+  wmma::fill_fragment(up_acc, 0.0F);
+
+  for (int kk = 0; kk < k; kk += 16) {
+    // Stage 512 A values + 1024 gate-B values + 1024 up-B values.
+    for (int idx = static_cast<int>(threadIdx.x);
+         idx < 2560;
+         idx += static_cast<int>(blockDim.x)) {
+      if (idx < 512) {
+        const int rg = idx / 256;
+        const int local = idx - rg * 256;
+        const int i = local / 16;
+        const int j = local - i * 16;
+        shared_a[idx] =
+            input[static_cast<std::uint64_t>(block_m + rg * 16 + i) * k +
+                  kk + j];
+      } else if (idx < 1536) {
+        const int local_all = idx - 512;
+        const int cg = local_all / 256;
+        const int local = local_all - cg * 256;
+        const int j = local / 16;
+        const int i = local - j * 16;
+        shared_gate[local_all] =
+            gate_weight[
+                static_cast<std::uint64_t>(block_n + cg * 16 + j) * k +
+                kk + i];
+      } else {
+        const int local_all = idx - 1536;
+        const int cg = local_all / 256;
+        const int local = local_all - cg * 256;
+        const int j = local / 16;
+        const int i = local - j * 16;
+        shared_up[local_all] =
+            up_weight[
+                static_cast<std::uint64_t>(block_n + cg * 16 + j) * k +
+                kk + i];
+      }
+    }
+
+    __syncthreads();
+
+    wmma::load_matrix_sync(
+        a_frag,
+        shared_a + row_group * 256,
+        16);
+    wmma::load_matrix_sync(
+        gate_frag,
+        shared_gate + col_group * 256,
+        16);
+    wmma::load_matrix_sync(
+        up_frag,
+        shared_up + col_group * 256,
+        16);
+
+    wmma::mma_sync(gate_acc, a_frag, gate_frag, gate_acc);
+    wmma::mma_sync(up_acc, a_frag, up_frag, up_acc);
+
+    __syncthreads();
+  }
+
+  #pragma unroll
+  for (int i = 0; i < gate_acc.num_elements; ++i) {
+    gate_acc.x[i] = silu(gate_acc.x[i]) * up_acc.x[i];
+  }
+
+  float* out_ptr =
+      output + static_cast<std::uint64_t>(tile_m) * n + tile_n;
+  wmma::store_matrix_sync(
+      out_ptr,
+      gate_acc,
+      n,
+      wmma::mem_row_major);
+}
+
 }  // namespace
 
 extern "C" int cuda_operator_gemm_swiglu_v0(
@@ -959,6 +1090,50 @@ extern "C" int cuda_operator_gemm_swiglu_v7(
   const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
 
   gemm_swiglu_v7_shared_a_kernel<<<grid, block, 0, cuda_stream>>>(
+      reinterpret_cast<const __nv_bfloat16*>(input_bf16),
+      reinterpret_cast<const __nv_bfloat16*>(gate_weight_bf16),
+      reinterpret_cast<const __nv_bfloat16*>(up_weight_bf16),
+      output,
+      static_cast<int>(m),
+      static_cast<int>(k),
+      static_cast<int>(n));
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_swiglu_v8(
+    const void* input_bf16,
+    const void* gate_weight_bf16,
+    const void* up_weight_bf16,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  if (m == 0 || n == 0) {
+    return static_cast<int>(cudaSuccess);
+  }
+  if (input_bf16 == nullptr || gate_weight_bf16 == nullptr ||
+      up_weight_bf16 == nullptr || output == nullptr || k == 0) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  if ((m % 32) != 0 || (k % 16) != 0 || (n % 64) != 0) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  if (m > static_cast<std::uint64_t>(INT32_MAX) ||
+      n > static_cast<std::uint64_t>(INT32_MAX) ||
+      k > static_cast<std::uint64_t>(INT32_MAX)) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+
+  const dim3 grid(
+      static_cast<unsigned int>(n / 64),
+      static_cast<unsigned int>(m / 32),
+      1U);
+  const dim3 block(256U, 1U, 1U);
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  gemm_swiglu_v8_shared_ab_kernel<<<grid, block, 0, cuda_stream>>>(
       reinterpret_cast<const __nv_bfloat16*>(input_bf16),
       reinterpret_cast<const __nv_bfloat16*>(gate_weight_bf16),
       reinterpret_cast<const __nv_bfloat16*>(up_weight_bf16),
