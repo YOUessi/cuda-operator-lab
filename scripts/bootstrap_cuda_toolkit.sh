@@ -22,6 +22,7 @@ NVVM_TOOLS="$(pick_dir 'cuda-nvvm-tools-12.8.*')"
 CUDART_DEV="$(pick_dir 'cuda-cudart-dev_linux-64-12.8.*')"
 CRT_DEV="$(pick_dir 'cuda-crt-dev_linux-64-12.8.*')"
 CRT_TOOLS="$(pick_dir 'cuda-crt-tools-12.8.*')"
+CCCL_DEV="$(pick_dir 'cuda-cccl_linux-64-12.8.*')"
 
 rm -rf "$OUT"
 mkdir -p "$OUT/bin/crt" \
