@@ -415,6 +415,175 @@ LtDescriptors* cached_lt_plan(
   return raw;
 }
 
+
+std::unique_ptr<LtDescriptors> create_autotuned_lt_plan(
+    CublasLtApi& api,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    cudaStream_t stream) {
+  auto desc = create_lt_plan(api, m, k, n, bias, false);
+  if (!desc) {
+    return nullptr;
+  }
+
+  cublasLtMatmulPreference_t preference = nullptr;
+  if (api.preference_create(&preference) != kCublasSuccess) {
+    return nullptr;
+  }
+
+  const std::size_t max_workspace = kLtWorkspaceBytes;
+  if (api.preference_set_attribute(
+          preference,
+          kLtPrefMaxWorkspaceBytes,
+          &max_workspace,
+          sizeof(max_workspace)) != kCublasSuccess) {
+    api.preference_destroy(preference);
+    return nullptr;
+  }
+
+  cublasLtMatmulHeuristicResult_t candidates[8]{};
+  int returned = 0;
+  const cublasStatus_t heuristic_status = api.algo_get_heuristic(
+      api.handle,
+      desc->op,
+      desc->a,
+      desc->b,
+      desc->c,
+      desc->d,
+      preference,
+      8,
+      candidates,
+      &returned);
+  api.preference_destroy(preference);
+
+  if (heuristic_status != kCublasSuccess || returned <= 0) {
+    return nullptr;
+  }
+
+  std::size_t largest_workspace = 0;
+  for (int i = 0; i < returned; ++i) {
+    if (candidates[i].state == kCublasSuccess &&
+        candidates[i].workspace_size <= kLtWorkspaceBytes) {
+      largest_workspace =
+          candidates[i].workspace_size > largest_workspace
+              ? candidates[i].workspace_size
+              : largest_workspace;
+    }
+  }
+
+  if (largest_workspace > 0) {
+    if (cudaMalloc(&desc->workspace, largest_workspace) != cudaSuccess) {
+      return nullptr;
+    }
+  }
+
+  const float alpha = 1.0F;
+  const float beta = 0.0F;
+  constexpr int kTuneRepeats = 3;
+
+  cudaEvent_t start = nullptr;
+  cudaEvent_t end = nullptr;
+  if (cudaEventCreate(&start) != cudaSuccess ||
+      cudaEventCreate(&end) != cudaSuccess) {
+    if (start != nullptr) cudaEventDestroy(start);
+    if (end != nullptr) cudaEventDestroy(end);
+    return nullptr;
+  }
+
+  float best_ms = 1.0e30F;
+  int best_index = -1;
+
+  for (int i = 0; i < returned; ++i) {
+    if (candidates[i].state != kCublasSuccess ||
+        candidates[i].workspace_size > largest_workspace) {
+      continue;
+    }
+
+    const cublasStatus_t warm_status = api.matmul(
+        api.handle,
+        desc->op,
+        &alpha,
+        weight,
+        desc->a,
+        input,
+        desc->b,
+        &beta,
+        output,
+        desc->c,
+        output,
+        desc->d,
+        &candidates[i].algo,
+        desc->workspace,
+        candidates[i].workspace_size,
+        stream);
+    if (warm_status != kCublasSuccess ||
+        cudaStreamSynchronize(stream) != cudaSuccess) {
+      continue;
+    }
+
+    cudaEventRecord(start, stream);
+    bool valid = true;
+    for (int repeat = 0; repeat < kTuneRepeats; ++repeat) {
+      if (api.matmul(
+              api.handle,
+              desc->op,
+              &alpha,
+              weight,
+              desc->a,
+              input,
+              desc->b,
+              &beta,
+              output,
+              desc->c,
+              output,
+              desc->d,
+              &candidates[i].algo,
+              desc->workspace,
+              candidates[i].workspace_size,
+              stream) != kCublasSuccess) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid) {
+      cudaStreamSynchronize(stream);
+      continue;
+    }
+
+    cudaEventRecord(end, stream);
+    if (cudaEventSynchronize(end) != cudaSuccess) {
+      continue;
+    }
+
+    float elapsed_ms = 0.0F;
+    if (cudaEventElapsedTime(&elapsed_ms, start, end) != cudaSuccess) {
+      continue;
+    }
+    const float per_call_ms = elapsed_ms / static_cast<float>(kTuneRepeats);
+    if (per_call_ms < best_ms) {
+      best_ms = per_call_ms;
+      best_index = i;
+    }
+  }
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(end);
+
+  if (best_index < 0) {
+    return nullptr;
+  }
+
+  desc->algo = candidates[best_index].algo;
+  desc->workspace_size = candidates[best_index].workspace_size;
+  desc->has_algo = true;
+  return desc;
+}
+
 __device__ __forceinline__ float gelu_exact(float x) {
   return 0.5F * x * (1.0F + erff(x * kInvSqrt2));
 }
@@ -833,6 +1002,87 @@ extern "C" int cuda_operator_gemm_bias_gelu_v4(
   const float beta = 0.0F;
   const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
 
+  const cublasStatus_t status = api.matmul(
+      api.handle,
+      desc->op,
+      &alpha,
+      weight,
+      desc->a,
+      input,
+      desc->b,
+      &beta,
+      output,
+      desc->c,
+      output,
+      desc->d,
+      &desc->algo,
+      desc->workspace,
+      desc->workspace_size,
+      cuda_stream);
+
+  if (status != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_bias_gelu_v5(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  const int validation =
+      validate_arguments(input, weight, bias, output, m, k, n);
+  if (validation != static_cast<int>(cudaSuccess) || m == 0 || n == 0) {
+    return validation;
+  }
+
+  auto& api = cublaslt_api();
+  if (!api.ready) {
+    return static_cast<int>(cudaErrorSharedObjectSymbolNotFound);
+  }
+
+  thread_local std::unordered_map<
+      LtPlanKey,
+      std::unique_ptr<LtDescriptors>,
+      LtPlanKeyHash> autotuned_cache;
+
+  const LtPlanKey key{m, k, n};
+  LtDescriptors* desc = nullptr;
+  auto it = autotuned_cache.find(key);
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  if (it == autotuned_cache.end()) {
+    auto plan = create_autotuned_lt_plan(
+        api, m, k, n, input, weight, bias, output, cuda_stream);
+    if (!plan) {
+      return static_cast<int>(cudaErrorUnknown);
+    }
+    desc = plan.get();
+    autotuned_cache.emplace(key, std::move(plan));
+  } else {
+    desc = it->second.get();
+  }
+
+  if (desc->bias != bias) {
+    const void* bias_ptr = bias;
+    if (api.matmul_desc_set_attribute(
+            desc->op,
+            kLtDescBiasPointer,
+            &bias_ptr,
+            sizeof(bias_ptr)) != kCublasSuccess) {
+      return static_cast<int>(cudaErrorUnknown);
+    }
+    desc->bias = bias;
+  }
+
+  const float alpha = 1.0F;
+  const float beta = 0.0F;
   const cublasStatus_t status = api.matmul(
       api.handle,
       desc->op,
