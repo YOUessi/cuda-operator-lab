@@ -198,3 +198,26 @@ def gemm_swiglu_packed(
     gate = packed[:, :n]
     up = packed[:, n:]
     return torch.nn.functional.silu(gate) * up
+
+
+def gemm_swiglu_bf16_fp32_reference(
+    x_bf16: torch.Tensor,
+    packed_weight_bf16: torch.Tensor,
+) -> torch.Tensor:
+    """Reference for BF16 inputs with FP32 matmul/post-processing output."""
+    if x_bf16.ndim != 2 or packed_weight_bf16.ndim != 2:
+        raise ValueError("x_bf16 and packed_weight_bf16 must be 2-D")
+    if x_bf16.shape[1] != packed_weight_bf16.shape[1]:
+        raise ValueError("inner dimensions must match")
+    if packed_weight_bf16.shape[0] % 2 != 0:
+        raise ValueError("packed_weight_bf16.shape[0] must be even")
+    if x_bf16.dtype != torch.bfloat16 or packed_weight_bf16.dtype != torch.bfloat16:
+        raise TypeError("reference expects BF16 tensors")
+    packed = torch.matmul(
+        x_bf16.float(),
+        packed_weight_bf16.float().transpose(0, 1),
+    )
+    n = packed_weight_bf16.shape[0] // 2
+    gate = packed[:, :n]
+    up = packed[:, n:]
+    return torch.nn.functional.silu(gate) * up

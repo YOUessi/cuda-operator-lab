@@ -4060,3 +4060,71 @@ Artifacts:
 - `reports/data/gemm_swiglu_stable_v2_v3_seed2_rtx4090.csv`
 
 Next research target: eliminate or reduce the materialized [M,2N] projection using CUTLASS/custom Tensor Core fusion, or change GEMM precision/layout to exploit Tensor Cores more directly.
+
+## E39 — GEMM + SwiGLU V4: BF16 Tensor Core packed GEMM
+
+Status: validated mixed-precision acceleration.
+
+Architecture:
+
+```text
+BF16 X[M,K]
+BF16 W_packed[2N,K]
+        |
+        | cublasGemmEx
+        | BF16 inputs
+        | FP32 accumulate
+        v
+FP32 packed[M,2N]
+        |
+        | scalar split + SwiGLU
+        v
+FP32 output[M,N]
+```
+
+This experiment isolates GEMM precision/execution from post-kernel tuning.
+
+Validation:
+
+```text
+full pytest: 756 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+Performance:
+
+| M x K x N | V2 FP32 packed | V4 BF16 TC | PyTorch native BF16 | V2/V4 |
+|---:|---:|---:|---:|---:|
+| 32 x 128 x 256 | 15.360 | 15.120 | 19.696 | 1.016x |
+| 128 x 512 x 512 | 27.648 | 18.352 | 19.456 | 1.507x |
+| 128 x 1024 x 4096 | 122.880 | 53.328 | 52.224 | 2.304x |
+| 512 x 1024 x 4096 | 435.984 | 217.088 | 207.872 | 2.008x |
+| 512 x 4096 x 4096 | 2246.656 | 669.696 | 590.848 | 3.355x |
+
+Accuracy versus BF16-input FP32 reference:
+
+```text
+32 x 128 x 256:
+  max_abs ~3.05e-4
+  mean_abs ~8.19e-6
+
+128 x 1024 x 4096:
+  max_abs ~3.42e-2
+  mean_abs ~6.31e-4
+
+512 x 4096 x 4096:
+  max_abs ~5.70e-1
+  mean_abs ~1.23e-2
+```
+
+Decision:
+
+V4 establishes Tensor Core BF16 as the new high-throughput path.
+
+The next isolated bottleneck is the FP32 [M,2N] workspace. V5 should keep BF16 Tensor Core GEMM but store its intermediate in BF16, convert gate/up to FP32 inside the SwiGLU kernel, and retain FP32 final output.
+
+Artifact:
+
+- reports/data/gemm_swiglu_v2_v4_bf16_rtx4090.csv
