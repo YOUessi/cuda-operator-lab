@@ -37,6 +37,48 @@ using CublasSgemmFn = cublasStatus_t (*)(
     float*,
     int);
 
+using cublasLtHandle_t = void*;
+using cublasLtMatmulDesc_t = void*;
+using cublasLtMatrixLayout_t = void*;
+using cublasLtMatmulAlgo_t = void;
+
+using CublasLtCreateFn = cublasStatus_t (*)(cublasLtHandle_t*);
+using CublasLtDestroyFn = cublasStatus_t (*)(cublasLtHandle_t);
+using CublasLtMatmulDescCreateFn =
+    cublasStatus_t (*)(cublasLtMatmulDesc_t*, int, int);
+using CublasLtMatmulDescDestroyFn = cublasStatus_t (*)(cublasLtMatmulDesc_t);
+using CublasLtMatmulDescSetAttributeFn =
+    cublasStatus_t (*)(cublasLtMatmulDesc_t, int, const void*, std::size_t);
+using CublasLtMatrixLayoutCreateFn =
+    cublasStatus_t (*)(cublasLtMatrixLayout_t*, int, std::uint64_t, std::uint64_t, std::int64_t);
+using CublasLtMatrixLayoutDestroyFn =
+    cublasStatus_t (*)(cublasLtMatrixLayout_t);
+using CublasLtMatmulFn = cublasStatus_t (*)(
+    cublasLtHandle_t,
+    cublasLtMatmulDesc_t,
+    const void*,
+    const void*,
+    cublasLtMatrixLayout_t,
+    const void*,
+    cublasLtMatrixLayout_t,
+    const void*,
+    const void*,
+    cublasLtMatrixLayout_t,
+    void*,
+    cublasLtMatrixLayout_t,
+    const cublasLtMatmulAlgo_t*,
+    void*,
+    std::size_t,
+    cudaStream_t);
+
+constexpr int kCudaR32F = 0;
+constexpr int kCublasCompute32F = 68;
+constexpr int kLtDescTransA = 3;
+constexpr int kLtDescTransB = 4;
+constexpr int kLtDescEpilogue = 7;
+constexpr int kLtDescBiasPointer = 8;
+constexpr std::uint32_t kLtEpilogueGeluBias = 36U;
+
 struct CublasApi {
   void* library = nullptr;
   cublasHandle_t handle = nullptr;
@@ -80,6 +122,85 @@ CublasApi& cublas_api() {
   static CublasApi api;
   return api;
 }
+
+struct CublasLtApi {
+  void* library = nullptr;
+  cublasLtHandle_t handle = nullptr;
+  CublasLtCreateFn create = nullptr;
+  CublasLtDestroyFn destroy = nullptr;
+  CublasLtMatmulDescCreateFn matmul_desc_create = nullptr;
+  CublasLtMatmulDescDestroyFn matmul_desc_destroy = nullptr;
+  CublasLtMatmulDescSetAttributeFn matmul_desc_set_attribute = nullptr;
+  CublasLtMatrixLayoutCreateFn matrix_layout_create = nullptr;
+  CublasLtMatrixLayoutDestroyFn matrix_layout_destroy = nullptr;
+  CublasLtMatmulFn matmul = nullptr;
+  bool ready = false;
+
+  CublasLtApi() {
+    library = dlopen("libcublasLt.so.12", RTLD_NOW | RTLD_LOCAL);
+    if (library == nullptr) {
+      return;
+    }
+
+    create = reinterpret_cast<CublasLtCreateFn>(dlsym(library, "cublasLtCreate"));
+    destroy = reinterpret_cast<CublasLtDestroyFn>(dlsym(library, "cublasLtDestroy"));
+    matmul_desc_create = reinterpret_cast<CublasLtMatmulDescCreateFn>(
+        dlsym(library, "cublasLtMatmulDescCreate"));
+    matmul_desc_destroy = reinterpret_cast<CublasLtMatmulDescDestroyFn>(
+        dlsym(library, "cublasLtMatmulDescDestroy"));
+    matmul_desc_set_attribute = reinterpret_cast<CublasLtMatmulDescSetAttributeFn>(
+        dlsym(library, "cublasLtMatmulDescSetAttribute"));
+    matrix_layout_create = reinterpret_cast<CublasLtMatrixLayoutCreateFn>(
+        dlsym(library, "cublasLtMatrixLayoutCreate"));
+    matrix_layout_destroy = reinterpret_cast<CublasLtMatrixLayoutDestroyFn>(
+        dlsym(library, "cublasLtMatrixLayoutDestroy"));
+    matmul = reinterpret_cast<CublasLtMatmulFn>(dlsym(library, "cublasLtMatmul"));
+
+    if (create == nullptr || destroy == nullptr ||
+        matmul_desc_create == nullptr || matmul_desc_destroy == nullptr ||
+        matmul_desc_set_attribute == nullptr ||
+        matrix_layout_create == nullptr || matrix_layout_destroy == nullptr ||
+        matmul == nullptr) {
+      return;
+    }
+
+    ready = create(&handle) == kCublasSuccess;
+  }
+
+  ~CublasLtApi() {
+    if (handle != nullptr && destroy != nullptr) {
+      destroy(handle);
+    }
+    if (library != nullptr) {
+      dlclose(library);
+    }
+  }
+};
+
+CublasLtApi& cublaslt_api() {
+  static CublasLtApi api;
+  return api;
+}
+
+struct LtDescriptors {
+  CublasLtApi* api = nullptr;
+  cublasLtMatmulDesc_t op = nullptr;
+  cublasLtMatrixLayout_t a = nullptr;
+  cublasLtMatrixLayout_t b = nullptr;
+  cublasLtMatrixLayout_t c = nullptr;
+  cublasLtMatrixLayout_t d = nullptr;
+
+  ~LtDescriptors() {
+    if (api == nullptr) {
+      return;
+    }
+    if (a != nullptr) api->matrix_layout_destroy(a);
+    if (b != nullptr) api->matrix_layout_destroy(b);
+    if (c != nullptr) api->matrix_layout_destroy(c);
+    if (d != nullptr) api->matrix_layout_destroy(d);
+    if (op != nullptr) api->matmul_desc_destroy(op);
+  }
+};
 
 __device__ __forceinline__ float gelu_exact(float x) {
   return 0.5F * x * (1.0F + erff(x * kInvSqrt2));
@@ -283,5 +404,94 @@ extern "C" int cuda_operator_gemm_bias_gelu_v1(
   const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
   bias_gelu_epilogue_kernel<<<capped_blocks, kThreads, 0, cuda_stream>>>(
       output, bias, elements, n);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_bias_gelu_v2(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  const int validation =
+      validate_arguments(input, weight, bias, output, m, k, n);
+  if (validation != static_cast<int>(cudaSuccess) || m == 0 || n == 0) {
+    return validation;
+  }
+
+  auto& api = cublaslt_api();
+  if (!api.ready) {
+    return static_cast<int>(cudaErrorSharedObjectSymbolNotFound);
+  }
+
+  LtDescriptors desc;
+  desc.api = &api;
+
+  if (api.matmul_desc_create(&desc.op, kCublasCompute32F, kCudaR32F) !=
+      kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const int trans_a = kCublasOpT;
+  const int trans_b = kCublasOpN;
+  const std::uint32_t epilogue = kLtEpilogueGeluBias;
+  const void* bias_ptr = bias;
+
+  if (api.matmul_desc_set_attribute(
+          desc.op, kLtDescTransA, &trans_a, sizeof(trans_a)) != kCublasSuccess ||
+      api.matmul_desc_set_attribute(
+          desc.op, kLtDescTransB, &trans_b, sizeof(trans_b)) != kCublasSuccess ||
+      api.matmul_desc_set_attribute(
+          desc.op, kLtDescEpilogue, &epilogue, sizeof(epilogue)) != kCublasSuccess ||
+      api.matmul_desc_set_attribute(
+          desc.op, kLtDescBiasPointer, &bias_ptr, sizeof(bias_ptr)) !=
+          kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  // Row-major memory is viewed as column-major transposes:
+  // W[N,K] -> A storage KxN, op(A)=A^T -> NxK
+  // X[M,K] -> B storage KxM, op(B)=B -> KxM
+  // Y[M,N] -> D storage NxM.
+  if (api.matrix_layout_create(&desc.a, kCudaR32F, k, n, k) !=
+          kCublasSuccess ||
+      api.matrix_layout_create(&desc.b, kCudaR32F, k, m, k) !=
+          kCublasSuccess ||
+      api.matrix_layout_create(&desc.c, kCudaR32F, n, m, n) !=
+          kCublasSuccess ||
+      api.matrix_layout_create(&desc.d, kCudaR32F, n, m, n) !=
+          kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const float alpha = 1.0F;
+  const float beta = 0.0F;
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  const cublasStatus_t status = api.matmul(
+      api.handle,
+      desc.op,
+      &alpha,
+      weight,
+      desc.a,
+      input,
+      desc.b,
+      &beta,
+      output,
+      desc.c,
+      output,
+      desc.d,
+      nullptr,
+      nullptr,
+      0,
+      cuda_stream);
+
+  if (status != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
   return static_cast<int>(cudaGetLastError());
 }
