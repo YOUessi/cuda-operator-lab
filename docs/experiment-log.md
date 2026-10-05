@@ -4515,3 +4515,99 @@ Artifacts:
 
 - reports/data/gemm_swiglu_v4_v7_v9_shared_a8_rtx4090.csv
 - reports/data/gemm_swiglu_v9_ptxas_sm89.txt
+
+## E45 — GEMM + SwiGLU V10: hybrid custom/cuBLAS dispatch
+
+Status: **validated final runtime policy**
+
+### Goal
+
+Turn the V4/V7 crossover evidence into a practical runtime policy.
+
+### Crossover study
+
+Direct V4 versus V7 only, with two independent runs:
+
+```text
+M = 16,32,64,128
+K = 64,128,256,512,1024
+N = 64,128,256,512,1024,2048
+
+rounds = 5
+samples/round = 40
+sample-level interleaving
+```
+
+Key observation:
+
+```text
+K = 64 or 128:
+  V7 consistently wins for tested M<=128,N<=2048
+
+K >= 256:
+  no robust custom-win region remains
+```
+
+### V10 policy
+
+```text
+small aligned shape:
+    packed weight is split by pointer
+    -> V7 workspace-free WMMA
+
+otherwise:
+    -> V4 cuBLAS BF16 packed GEMM
+```
+
+No weight copy is performed at runtime. For the custom path:
+
+```text
+gate_weight = packed_weight
+up_weight   = packed_weight + N*K
+```
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 808 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+### Representative final benchmark
+
+| M x K x N | Path | V4 | V10 | Speedup |
+|---:|---|---:|---:|---:|
+| 16 x 64 x 64 | V7 | 14.960 | 12.192 | 1.227x |
+| 32 x 128 x 256 | V7 | 14.336 | 12.944 | 1.108x |
+| 64 x 128 x 1024 | V7 | 15.360 | 13.088 | 1.174x |
+| 128 x 64 x 2048 | V7 | 17.216 | 13.056 | 1.319x |
+| 32 x 256 x 64 | V4 | 15.360 | 15.360 | 1.000x |
+| 128 x 512 x 512 | V4 | 18.432 | 18.432 | 1.000x |
+| 128 x 1024 x 4096 | V4 | 53.248 | 53.248 | 1.000x |
+| 512 x 1024 x 4096 | V4 | 174.080 | 174.080 | 1.000x |
+
+### Final interpretation
+
+The optimized GEMM+SwiGLU stack now has two execution regimes:
+
+```text
+small GEMM:
+  custom fused WMMA
+  no [M,2N] workspace
+  lower launch/materialization overhead
+
+medium/large GEMM:
+  cuBLAS BF16 Tensor Core
+  superior throughput/tile scheduling
+```
+
+The hybrid policy is more important than any single kernel variant. It captures the actual crossover between custom fusion and vendor GEMM throughput.
+
+Artifacts:
+
+- reports/data/gemm_swiglu_v4_v7_crossover_seed1_rtx4090.csv
+- reports/data/gemm_swiglu_v4_v7_crossover_seed2_rtx4090.csv
+- reports/data/gemm_swiglu_v10_hybrid_rtx4090.csv

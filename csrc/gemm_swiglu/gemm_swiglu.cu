@@ -1279,3 +1279,73 @@ extern "C" int cuda_operator_gemm_swiglu_v9(
       static_cast<int>(n));
   return static_cast<int>(cudaGetLastError());
 }
+
+
+extern "C" int cuda_operator_gemm_swiglu_v10(
+    const void* input_bf16,
+    const void* packed_weight_bf16,
+    float* workspace,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  if (m == 0 || n == 0) {
+    return static_cast<int>(cudaSuccess);
+  }
+  if (input_bf16 == nullptr || packed_weight_bf16 == nullptr ||
+      workspace == nullptr || output == nullptr || k == 0) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  if (m > static_cast<std::uint64_t>(INT32_MAX) ||
+      n > static_cast<std::uint64_t>(INT32_MAX / 2) ||
+      k > static_cast<std::uint64_t>(INT32_MAX)) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+
+  // Stable two-seed crossover profile on RTX 4090 Laptop:
+  // every tested shape with K=64 or 128, M<=128, N<=2048 favored
+  // the workspace-free V7 WMMA path by >=1.05x. K>=256 did not
+  // produce a robust region, so it deliberately falls back to cuBLAS.
+  const bool use_custom =
+      m <= 128 &&
+      k <= 128 &&
+      n <= 2048 &&
+      (m % 16) == 0 &&
+      (k % 16) == 0 &&
+      (n % 64) == 0;
+
+  if (use_custom) {
+    const auto* packed =
+        reinterpret_cast<const __nv_bfloat16*>(packed_weight_bf16);
+    const auto* gate_weight = packed;
+    const auto* up_weight = packed + n * k;
+
+    const dim3 grid(
+        static_cast<unsigned int>(n / 64),
+        static_cast<unsigned int>(m / 16),
+        1U);
+    const dim3 block(128U, 1U, 1U);
+    const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+    gemm_swiglu_v7_shared_a_kernel<<<grid, block, 0, cuda_stream>>>(
+        reinterpret_cast<const __nv_bfloat16*>(input_bf16),
+        gate_weight,
+        up_weight,
+        output,
+        static_cast<int>(m),
+        static_cast<int>(k),
+        static_cast<int>(n));
+    return static_cast<int>(cudaGetLastError());
+  }
+
+  return cuda_operator_gemm_swiglu_v4(
+      input_bf16,
+      packed_weight_bf16,
+      workspace,
+      output,
+      m,
+      k,
+      n,
+      stream);
+}
