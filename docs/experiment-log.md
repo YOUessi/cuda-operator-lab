@@ -3628,3 +3628,137 @@ Artifacts:
 
 - `reports/data/gemm_bias_gelu_v0_v1_rtx4090.csv`
 - `reports/data/gemm_bias_gelu_v1_ptxas_sm89.txt`
+
+## E33 — GEMM + Bias + GELU: cuBLASLt fused epilogue and runtime tuning
+
+Status: **validated research/runtime progression**
+
+### V2 — true epilogue fusion
+
+Architecture:
+
+```text
+V0/V1:
+cuBLAS SGEMM
+  -> second Bias + exact GELU kernel
+
+V2:
+single cuBLASLt matmul
+  -> built-in GELU_BIAS epilogue
+```
+
+Important semantic constraint:
+
+```text
+V0/V1: exact erf GELU
+V2+: cuBLASLt tanh-approximate GELU
+```
+
+The two semantics are benchmarked against separate matching PyTorch references.
+
+### V3 — cached descriptors
+
+Per-shape op/layout descriptors are cached. Bias attribute updates are skipped when the pointer is unchanged.
+
+This reduces some overhead but does not fix poor algorithm choice for every shape.
+
+### V4 — explicit heuristic selection
+
+Adds:
+
+- `cublasLtMatmulPreference`;
+- 32 MiB maximum workspace;
+- `cublasLtMatmulAlgoGetHeuristic`;
+- cached selected algorithm.
+
+This substantially improves `128 x 1024 x 4096`, but rank-0 heuristic can be poor for large GEMMs.
+
+### V5 — first online autotuner
+
+Candidates are timed with real input data and the fastest is cached.
+
+Positive result:
+
+```text
+32 x 128 x 256: ~14–15 us
+128 x 512 x 512: ~18–20 us
+512 x 1024 x 4096: ~266–272 us in strong runs
+```
+
+Negative result: limited sampling produced unstable large-GEMM choices.
+
+### V6 — robust online autotuner
+
+Procedure:
+
+1. request up to eight heuristic candidates;
+2. allocate up to 32 MiB workspace;
+3. warm every valid candidate;
+4. execute five timing rounds;
+5. rotate candidate order each round;
+6. choose by median measured CUDA-event latency;
+7. cache descriptors, algorithm, and workspace for the shape.
+
+Validation:
+
+```text
+full pytest: 712 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+Representative latest run:
+
+| M x K x N | PyTorch tanh prealloc | V6 robust autotune |
+|---:|---:|---:|
+| 32 x 128 x 256 | 18.112 us | 14.336 us |
+| 128 x 512 x 512 | 22.288 us | 20.480 us |
+| 128 x 1024 x 4096 | 78.848 us | 81.920 us |
+| 512 x 1024 x 4096 | 295.936 us | 271.360 us |
+| 512 x 4096 x 4096 | 1188.864 us | 1174.528 us |
+
+Independent-process checks:
+
+```text
+512 x 4096 x 4096:
+  V6 run A ~1165.9 us
+  V6 run B ~1167.4 us
+```
+
+This is materially more stable than V5's bad ~1220 us selections.
+
+### Tuning overhead
+
+Measured first-call wall-clock cost:
+
+```text
+32 x 128 x 256:      ~48.4 ms
+128 x 512 x 512:      ~1.1 ms
+128 x 1024 x 4096:    ~3.6 ms
+512 x 1024 x 4096:   ~11.3 ms
+512 x 4096 x 4096:   ~53.7 ms
+```
+
+Therefore V6 is intended for repeated fixed-shape workloads where tuning cost is amortized, not latency-critical one-shot calls.
+
+Artifacts:
+
+- `reports/data/gemm_bias_gelu_v2_semantic_fair_rtx4090.csv`
+- `reports/data/gemm_bias_gelu_v0_v1_v2_v3_v4_v5_v6_rtx4090.csv`
+- `reports/data/gemm_bias_gelu_v6_independent_a_rtx4090.csv`
+- `reports/data/gemm_bias_gelu_v6_independent_b_rtx4090.csv`
+
+### Final engineering conclusion
+
+The main result is not merely that cuBLASLt supports an epilogue. The case study demonstrates that, once GEMM dominates runtime, performance engineering moves from CUDA thread/block tuning to:
+
+- fused epilogue semantics;
+- plan lifetime;
+- workspace budget;
+- algorithm heuristics;
+- empirical algorithm selection;
+- cache policy;
+- autotune stability and amortization.
+
+This is the transition from kernel optimization to GEMM runtime optimization.
