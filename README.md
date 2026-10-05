@@ -216,7 +216,7 @@ synccheck
 然后：
 
 ```bash
-./scripts/benchmark_all.sh
+bash scripts/benchmark_all.sh
 ```
 
 默认运行一组代表 shape，并输出：
