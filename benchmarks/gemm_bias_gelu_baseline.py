@@ -53,22 +53,39 @@ def main() -> None:
         torch.cuda.synchronize()
         max_abs = float((out - expected).abs().max().item()) if out.numel() else 0.0
 
+        tmp = torch.empty(m, n, device="cuda", dtype=torch.float32)
+        torch_out = torch.empty_like(tmp)
+
+        def torch_unfused_preallocated() -> None:
+            torch.mm(x, weight.transpose(0, 1), out=tmp)
+            tmp.add_(bias)
+            torch.ops.aten.gelu.out(tmp, approximate="none", out=torch_out)
+
         ours = measure_us(
             lambda: gemm_bias_gelu_v0_into(x, weight, bias, out),
             warmup=args.warmup,
             repeats=args.repeats,
         )
-        torch_times = measure_us(
+        torch_alloc = measure_us(
             lambda: gemm_bias_gelu(x, weight, bias),
             warmup=args.warmup,
             repeats=args.repeats,
         )
+        torch_prealloc = measure_us(
+            torch_unfused_preallocated,
+            warmup=args.warmup,
+            repeats=args.repeats,
+        )
+
         om, _, op95 = summarize(ours)
-        tm, _, tp95 = summarize(torch_times)
+        ta, _, ta95 = summarize(torch_alloc)
+        tp, _, tp95 = summarize(torch_prealloc)
 
         print(
             f"{m}x{k}x{n} ours={om:.3f} us "
-            f"torch={tm:.3f} us ratio={om/tm:.3f}x max_abs={max_abs:.3e}"
+            f"torch_prealloc={tp:.3f} us "
+            f"torch_alloc={ta:.3f} us "
+            f"ratio_prealloc={om/tp:.3f}x max_abs={max_abs:.3e}"
         )
         records.append({
             "m": m,
@@ -76,9 +93,12 @@ def main() -> None:
             "n": n,
             "ours_median_us": om,
             "ours_p95_us": op95,
-            "torch_median_us": tm,
-            "torch_p95_us": tp95,
-            "ratio_vs_torch": om / tm if tm else None,
+            "torch_prealloc_median_us": tp,
+            "torch_prealloc_p95_us": tp95,
+            "torch_alloc_median_us": ta,
+            "torch_alloc_p95_us": ta95,
+            "ratio_vs_torch_prealloc": om / tp if tp else None,
+            "ratio_vs_torch_alloc": om / ta if ta else None,
             "max_abs_error": max_abs,
         })
 
