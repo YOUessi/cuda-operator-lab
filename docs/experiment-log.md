@@ -3455,3 +3455,53 @@ Artifacts:
 - reports/data/fused_bias_gelu_stable_seed2_rtx4090.csv
 - reports/data/fused_bias_gelu_v0_ptxas_sm89.txt
 - reports/data/fused_bias_gelu_v1_ptxas_sm89.txt
+
+## E30 — SwiGLU
+
+Final sequence:
+
+```text
+V0 scalar fused SwiGLU
+-> V1 aligned float4 fast path
+-> V2 profile-guided dispatch
+```
+
+Stable two-seed direct V0/V1 speedups accepted for V1:
+
+```text
+256 x 512: 1.064x / 1.067x
+256 x 4096: 1.101x / 1.099x
+512 x 4096: 1.177x / 1.165x
+1024 x 1024: 1.098x / 1.098x
+1024 x 4096: 1.149x / 1.153x
+2048 x 4096: 1.100x / 1.101x
+```
+
+Rejected examples:
+
+```text
+128 x 4096: neutral
+512 x 1024: regression/neutral
+1024 x 512: regression
+2048 x 512: only ~1.03x
+2048 x 1024: only ~1.02x
+```
+
+Final validation:
+
+```text
+full pytest: 652 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+max_abs_error: 0
+```
+
+Artifacts:
+
+- reports/data/swiglu_v0_rtx4090.csv
+- reports/data/swiglu_v0_v1_rtx4090.csv
+- reports/data/swiglu_stable_seed1_rtx4090.csv
+- reports/data/swiglu_stable_seed2_rtx4090.csv
+- reports/data/swiglu_v0_ptxas_sm89.txt
+- reports/data/swiglu_v1_ptxas_sm89.txt
