@@ -1452,3 +1452,52 @@ Decision:
 This is the correct stopping point for post-kernel tuning. Once gate/up projections are packed into one GEMM, total latency is GEMM-dominated and the post-kernel contributes too little to justify additional shape policy complexity.
 
 The next optimization layer should target the GEMM itself: Tensor Core data types, CUTLASS/custom mainloop, or a true dual-output/fused SwiGLU GEMM that avoids materializing the full [M,2N] workspace.
+
+## GEMM + SwiGLU V4 BF16 Tensor Core packed GEMM
+
+V4 keeps the packed single-projection architecture from V2/V3 but changes GEMM precision and execution path.
+
+Inputs:
+
+- x: BF16 [M,K];
+- packed weight: BF16 [2N,K].
+
+GEMM:
+
+- cublasGemmEx;
+- BF16 x BF16 inputs;
+- FP32 accumulation;
+- FP32 [M,2N] workspace;
+- CUBLAS_GEMM_DEFAULT_TENSOR_OP.
+
+Post-processing:
+
+- existing scalar packed split/SwiGLU kernel;
+- final output remains FP32.
+
+The cuBLAS ABI is loaded dynamically, matching the existing repository design. Runtime constants were verified from the project's CUDA 12.8 headers:
+
+- CUDA_R_16BF = 14;
+- CUDA_R_32F = 0;
+- CUBLAS_COMPUTE_32F = 68;
+- CUBLAS_GEMM_DEFAULT_TENSOR_OP = 99.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: 756 passed;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors.
+
+Representative FP32 packed V2 -> BF16 Tensor Core V4:
+
+- 32 x 128 x 256: 15.360 us -> 15.120 us;
+- 128 x 512 x 512: 27.648 us -> 18.352 us (~1.51x);
+- 128 x 1024 x 4096: 122.880 us -> 53.328 us (~2.30x);
+- 512 x 1024 x 4096: 435.984 us -> 217.088 us (~2.01x);
+- 512 x 4096 x 4096: 2246.656 us -> 669.696 us (~3.36x).
+
+Accuracy is measured against a BF16-input, dequantized-FP32 matmul/SwiGLU reference. Mean absolute errors remain small; max absolute error grows with output dynamic range, reaching ~0.57 on the largest case.
+
+The remaining performance gap to native PyTorch BF16 is primarily consistent with writing/reading an FP32 [M,2N] intermediate. Next target: BF16 workspace with FP32 final output.
