@@ -133,9 +133,12 @@ def main() -> None:
                 "ours_p95_us": op95,
                 "torch_prealloc_median_us": tp,
                 "torch_prealloc_p95_us": tp95,
+                "torch_packed_median_us": tpack,
+                "torch_packed_p95_us": tpack95,
                 "torch_alloc_median_us": ta,
                 "torch_alloc_p95_us": ta95,
                 "ratio_vs_torch_prealloc": om / tp if tp else None,
+                "ratio_vs_torch_packed": om / tpack if tpack else None,
                 "max_abs_error": max_abs,
             })
 
