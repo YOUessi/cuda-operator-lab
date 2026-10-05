@@ -3505,3 +3505,104 @@ Artifacts:
 - reports/data/swiglu_stable_seed2_rtx4090.csv
 - reports/data/swiglu_v0_ptxas_sm89.txt
 - reports/data/swiglu_v1_ptxas_sm89.txt
+
+## E31 — GEMM + Bias + GELU V0
+
+Status: **validated baseline; ready to merge**
+
+### Goal
+
+Move from standalone pointwise/reduction kernels to Transformer-style GEMM epilogue work.
+
+Target:
+
+```text
+X[M,K]
+W[N,K]
+
+Y = GELU(X @ W^T + bias)
+```
+
+### cuBLAS integration
+
+Tang has cuBLAS 12.8 runtime libraries but no development headers.
+
+To avoid hardcoding a machine-specific Conda path, V0 uses runtime symbol loading:
+
+```text
+dlopen("libcublas.so.12")
+dlsym("cublasCreate_v2")
+dlsym("cublasSetStream_v2")
+dlsym("cublasSgemm_v2")
+dlsym("cublasDestroy_v2")
+```
+
+This keeps the repository build independent of cuBLAS headers while still using the installed CUDA runtime library.
+
+### Row-major mapping
+
+No transpose buffer is allocated.
+
+```text
+row-major X[M,K]  == column-major X^T[K,M]
+row-major W[N,K]  == column-major W^T[K,N]
+row-major Y[M,N]  == column-major Y^T[N,M]
+```
+
+cuBLAS computes:
+
+```text
+Y^T = W * X^T
+```
+
+with `cublasSgemm_v2(OP_T, OP_N, N, M, K, ...)`.
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 662 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+max_abs_error: 0
+```
+
+Epilogue ptxas:
+
+```text
+16 registers/thread
+0 B shared memory
+0 spills
+```
+
+### Fair performance comparison
+
+The first benchmark compared against an allocating PyTorch expression. That was corrected.
+
+Final baseline uses a fully preallocated unfused PyTorch path:
+
+```python
+torch.mm(x, weight.T, out=tmp)
+tmp.add_(bias)
+torch.ops.aten.gelu.out(tmp, approximate="none", out=out)
+```
+
+Selected results:
+
+| M x K x N | V0 cuBLAS + epilogue | PyTorch preallocated |
+|---:|---:|---:|
+| 32 x 128 x 256 | 19.200 us | 17.408 us |
+| 128 x 512 x 512 | 23.584 us | 21.696 us |
+| 128 x 1024 x 4096 | 80.896 us | 79.616 us |
+| 512 x 1024 x 4096 | 257.776 us | 294.912 us |
+| 512 x 4096 x 4096 | 938.768 us | 1176.576 us |
+
+Artifacts:
+
+- `reports/data/gemm_bias_gelu_v0_fair_rtx4090.csv`
+- `reports/data/gemm_bias_gelu_v0_ptxas_sm89.txt`
+
+### Next action
+
+V1 should preserve the identical cuBLAS GEMM and change only the epilogue to aligned float4 Bias+GELU. This isolates epilogue memory-path optimization before attempting a true fused GEMM epilogue with CUTLASS/cuBLASLt.
