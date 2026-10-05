@@ -99,6 +99,27 @@ __global__ void bias_gelu_epilogue_kernel(
   }
 }
 
+__global__ void bias_gelu_epilogue_float4_kernel(
+    float4* output4,
+    const float4* bias4,
+    std::uint64_t vec_elements,
+    std::uint64_t vec_n) {
+  for (std::uint64_t idx4 =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       idx4 < vec_elements;
+       idx4 += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const std::uint64_t col4 = idx4 % vec_n;
+    const float4 y = output4[idx4];
+    const float4 b = bias4[col4];
+    float4 out;
+    out.x = gelu_exact(y.x + b.x);
+    out.y = gelu_exact(y.y + b.y);
+    out.z = gelu_exact(y.z + b.z);
+    out.w = gelu_exact(y.w + b.w);
+    output4[idx4] = out;
+  }
+}
+
 int validate_arguments(
     const float* input,
     const float* weight,
@@ -182,6 +203,84 @@ extern "C" int cuda_operator_gemm_bias_gelu_v0(
       (elements + kThreads - 1) / kThreads);
   const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
 
+  bias_gelu_epilogue_kernel<<<capped_blocks, kThreads, 0, cuda_stream>>>(
+      output, bias, elements, n);
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_bias_gelu_v1(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  const int validation =
+      validate_arguments(input, weight, bias, output, m, k, n);
+  if (validation != static_cast<int>(cudaSuccess) || m == 0 || n == 0) {
+    return validation;
+  }
+
+  auto& api = cublas_api();
+  if (!api.ready) {
+    return static_cast<int>(cudaErrorSharedObjectSymbolNotFound);
+  }
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+  if (api.set_stream(api.handle, cuda_stream) != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const int mi = static_cast<int>(m);
+  const int ki = static_cast<int>(k);
+  const int ni = static_cast<int>(n);
+  const float alpha = 1.0F;
+  const float beta = 0.0F;
+
+  const cublasStatus_t gemm_status = api.sgemm(
+      api.handle,
+      kCublasOpT,
+      kCublasOpN,
+      ni,
+      mi,
+      ki,
+      &alpha,
+      weight,
+      ki,
+      input,
+      ki,
+      &beta,
+      output,
+      ni);
+  if (gemm_status != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+
+  const bool aligned =
+      (reinterpret_cast<std::uintptr_t>(output) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(bias) % alignof(float4) == 0);
+
+  if ((n % 4 == 0) && aligned) {
+    const std::uint64_t vec_n = n / 4;
+    const std::uint64_t vec_elements = m * vec_n;
+    const unsigned int blocks = static_cast<unsigned int>(
+        (vec_elements + kThreads - 1) / kThreads);
+    const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
+    bias_gelu_epilogue_float4_kernel<<<capped_blocks, kThreads, 0, cuda_stream>>>(
+        reinterpret_cast<float4*>(output),
+        reinterpret_cast<const float4*>(bias),
+        vec_elements,
+        vec_n);
+    return static_cast<int>(cudaGetLastError());
+  }
+
+  const std::uint64_t elements = m * n;
+  const unsigned int blocks = static_cast<unsigned int>(
+      (elements + kThreads - 1) / kThreads);
+  const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
   bias_gelu_epilogue_kernel<<<capped_blocks, kThreads, 0, cuda_stream>>>(
       output, bias, elements, n);
   return static_cast<int>(cudaGetLastError());

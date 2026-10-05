@@ -1130,3 +1130,27 @@ Representative V0 versus preallocated PyTorch unfused:
 Conclusion: the cuBLAS integration is correct and competitive. Small GEMMs still pay extra epilogue/launch overhead; larger workloads already benefit from the explicit cuBLAS + custom epilogue path.
 
 Next: keep the same GEMM and vectorize only the Bias+GELU epilogue with float4.
+
+## GEMM + Bias + GELU V1 — float4 standalone epilogue
+
+V1 preserves the exact same cuBLAS SGEMM as V0 and changes only the separate Bias+GELU epilogue from scalar IO to float4 IO.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **670 passed**;
+- sanitizer clean;
+- max observed error: 0;
+- scalar epilogue: 16 registers/thread;
+- float4 epilogue: 32 registers/thread;
+- no shared memory or spills.
+
+Representative V0 -> V1:
+
+- 32 x 128 x 256: 19.248 us -> 19.216 us;
+- 128 x 512 x 512: 23.552 us -> 23.552 us;
+- 128 x 1024 x 4096: 79.872 us -> 79.536 us;
+- 512 x 1024 x 4096: 294.912 us -> 287.680 us;
+- 512 x 4096 x 4096: 1157.120 us -> 1155.072 us.
+
+Conclusion: once GEMM dominates runtime, optimizing a second standalone epilogue kernel yields only marginal gains. The next optimization must remove that kernel launch entirely by using a true fused GEMM epilogue.

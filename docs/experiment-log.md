@@ -3606,3 +3606,25 @@ Artifacts:
 ### Next action
 
 V1 should preserve the identical cuBLAS GEMM and change only the epilogue to aligned float4 Bias+GELU. This isolates epilogue memory-path optimization before attempting a true fused GEMM epilogue with CUTLASS/cuBLASLt.
+
+## E32 — GEMM + Bias + GELU V1: float4 standalone epilogue
+
+Status: **validated negative/marginal optimization**
+
+V1 changes only the post-GEMM epilogue:
+
+```text
+V0: scalar Bias + exact GELU kernel
+V1: float4 Bias + exact GELU kernel
+```
+
+The cuBLAS SGEMM call is unchanged.
+
+Results show only small improvements because GEMM dominates total latency.
+
+The epilogue vectorization result therefore motivates a different architectural step: use cuBLASLt fused epilogue so GEMM + Bias + GELU execute as one matmul operation.
+
+Artifacts:
+
+- `reports/data/gemm_bias_gelu_v0_v1_rtx4090.csv`
+- `reports/data/gemm_bias_gelu_v1_ptxas_sm89.txt`

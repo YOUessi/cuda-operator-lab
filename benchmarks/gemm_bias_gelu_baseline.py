@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import gemm_bias_gelu_v0_into
+from cuda_operator_lab.bindings import gemm_bias_gelu_v0_into, gemm_bias_gelu_v1_into
 from cuda_operator_lab.references import gemm_bias_gelu
 
 
@@ -61,11 +61,10 @@ def main() -> None:
             tmp.add_(bias)
             torch.ops.aten.gelu.out(tmp, approximate="none", out=torch_out)
 
-        ours = measure_us(
-            lambda: gemm_bias_gelu_v0_into(x, weight, bias, out),
-            warmup=args.warmup,
-            repeats=args.repeats,
-        )
+        variants = [
+            ("v0_scalar_epilogue", gemm_bias_gelu_v0_into),
+            ("v1_float4_epilogue", gemm_bias_gelu_v1_into),
+        ]
         torch_alloc = measure_us(
             lambda: gemm_bias_gelu(x, weight, bias),
             warmup=args.warmup,
@@ -77,30 +76,40 @@ def main() -> None:
             repeats=args.repeats,
         )
 
-        om, _, op95 = summarize(ours)
         ta, _, ta95 = summarize(torch_alloc)
         tp, _, tp95 = summarize(torch_prealloc)
 
-        print(
-            f"{m}x{k}x{n} ours={om:.3f} us "
-            f"torch_prealloc={tp:.3f} us "
-            f"torch_alloc={ta:.3f} us "
-            f"ratio_prealloc={om/tp:.3f}x max_abs={max_abs:.3e}"
-        )
-        records.append({
-            "m": m,
-            "k": k,
-            "n": n,
-            "ours_median_us": om,
-            "ours_p95_us": op95,
-            "torch_prealloc_median_us": tp,
-            "torch_prealloc_p95_us": tp95,
-            "torch_alloc_median_us": ta,
-            "torch_alloc_p95_us": ta95,
-            "ratio_vs_torch_prealloc": om / tp if tp else None,
-            "ratio_vs_torch_alloc": om / ta if ta else None,
-            "max_abs_error": max_abs,
-        })
+        for name, fn in variants:
+            out = torch.empty(m, n, device="cuda", dtype=torch.float32)
+            fn(x, weight, bias, out)
+            torch.cuda.synchronize()
+            max_abs = float((out - expected).abs().max().item()) if out.numel() else 0.0
+            samples = measure_us(
+                lambda fn=fn,out=out: fn(x, weight, bias, out),
+                warmup=args.warmup,
+                repeats=args.repeats,
+            )
+            om, _, op95 = summarize(samples)
+            print(
+                f"{m}x{k}x{n} {name}={om:.3f} us "
+                f"torch_prealloc={tp:.3f} us "
+                f"ratio_prealloc={om/tp:.3f}x max_abs={max_abs:.3e}"
+            )
+            records.append({
+                "m": m,
+                "k": k,
+                "n": n,
+                "variant": name,
+                "ours_median_us": om,
+                "ours_p95_us": op95,
+                "torch_prealloc_median_us": tp,
+                "torch_prealloc_p95_us": tp95,
+                "torch_alloc_median_us": ta,
+                "torch_alloc_p95_us": ta95,
+                "ratio_vs_torch_prealloc": om / tp if tp else None,
+                "ratio_vs_torch_alloc": om / ta if ta else None,
+                "max_abs_error": max_abs,
+            })
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8") as f:
