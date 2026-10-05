@@ -3406,3 +3406,52 @@ V0 serial fused baseline
 ```
 
 This case study demonstrates an end-to-end fusion result rather than only a faster standalone normalization kernel: selected shapes beat the unfused framework path by eliminating the residual-add intermediate while retaining optimized row statistics and vectorized IO.
+
+## E29 — Fused Bias + GELU
+
+Final sequence:
+
+```text
+V0 scalar fused pointwise kernel
+-> V1 aligned float4 fast path
+-> V2 profile-guided dispatch
+```
+
+Stable cold-cache V0/V1 observations across two seeds:
+
+```text
+512 x 4096: 1.407x / 1.418x
+1024 x 4096: 1.129x / 1.129x
+2048 x 1024: 1.223x / 1.225x
+2048 x 4096: 1.113x / 1.113x
+```
+
+Rejected examples:
+
+```text
+128 x 4096: ~neutral
+1024 x 512: V1 regresses
+2048 x 512: V1 regresses
+128 x 1024: ~neutral
+```
+
+V2 uses V1 only for the four strong-evidence shapes and V0 elsewhere.
+
+Validation:
+
+```text
+full pytest: 614 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+max_abs_error: 0
+```
+
+Artifacts:
+
+- reports/data/fused_bias_gelu_v0_rtx4090.csv
+- reports/data/fused_bias_gelu_v0_v1_rtx4090.csv
+- reports/data/fused_bias_gelu_stable_seed1_rtx4090.csv
+- reports/data/fused_bias_gelu_stable_seed2_rtx4090.csv
+- reports/data/fused_bias_gelu_v0_ptxas_sm89.txt
+- reports/data/fused_bias_gelu_v1_ptxas_sm89.txt
