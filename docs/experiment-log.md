@@ -4128,3 +4128,80 @@ The next isolated bottleneck is the FP32 [M,2N] workspace. V5 should keep BF16 T
 Artifact:
 
 - reports/data/gemm_swiglu_v2_v4_bf16_rtx4090.csv
+
+## E40 — GEMM + SwiGLU V5: BF16 packed workspace
+
+Status: **validated negative/marginal precision-bandwidth trade-off**
+
+### Hypothesis
+
+V4 still materializes an FP32 [M,2N] workspace. Since BF16 Tensor Core GEMM is already used, storing that intermediate as BF16 could cut intermediate memory traffic in half.
+
+### Controlled change
+
+Held constant:
+
+- BF16 input;
+- BF16 packed [2N,K] weight;
+- cublasGemmEx;
+- FP32 accumulation;
+- scalar split/SwiGLU post-kernel structure;
+- FP32 final output.
+
+Changed only:
+
+```text
+V4 workspace: FP32
+V5 workspace: BF16
+```
+
+The V5 post-kernel reconstructs BF16 values to FP32 in registers before SiLU * up.
+
+### Validation
+
+```text
+full pytest: 765 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+ptxas: 18 registers/thread, 0 shared memory, 0 spills
+```
+
+### Performance
+
+| M x K x N | V4 FP32 ws | V5 BF16 ws | Speedup |
+|---:|---:|---:|---:|
+| 32 x 128 x 256 | 15.328 | 15.200 | 1.008x |
+| 128 x 512 x 512 | 18.432 | 18.144 | 1.016x |
+| 128 x 1024 x 4096 | 54.160 | 52.688 | 1.028x |
+| 512 x 1024 x 4096 | 174.752 | 169.040 | 1.034x |
+| 512 x 4096 x 4096 | 583.488 | 577.536 | 1.010x |
+
+### Quality cost relative to V4
+
+Representative:
+
+```text
+128 x 1024 x 4096:
+  mean absolute error ~0.621
+  mean relative error ~0.27%
+  p99 relative error ~1.99%
+
+512 x 4096 x 4096:
+  mean absolute error ~2.49
+  mean relative error ~0.25%
+  p99 relative error ~1.79%
+```
+
+### Decision
+
+Do not promote V5 as the default.
+
+The packed intermediate is not the dominant remaining bottleneck: halving its storage width produces only 1–3% latency improvement while adding extra output quantization.
+
+The next meaningful direction is to reduce or eliminate the materialized [M,2N] projection itself with a custom/CUTLASS Tensor Core kernel or a fused multi-output GEMM design.
+
+Artifacts:
+
+- reports/data/gemm_swiglu_v4_v5_bf16_workspace_rtx4090.csv
+- reports/data/gemm_swiglu_v5_ptxas_sm89.txt

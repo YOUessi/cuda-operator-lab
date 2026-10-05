@@ -1501,3 +1501,48 @@ Representative FP32 packed V2 -> BF16 Tensor Core V4:
 Accuracy is measured against a BF16-input, dequantized-FP32 matmul/SwiGLU reference. Mean absolute errors remain small; max absolute error grows with output dynamic range, reaching ~0.57 on the largest case.
 
 The remaining performance gap to native PyTorch BF16 is primarily consistent with writing/reading an FP32 [M,2N] intermediate. Next target: BF16 workspace with FP32 final output.
+
+## GEMM + SwiGLU V5 BF16 workspace experiment
+
+V5 keeps V4's BF16 Tensor Core GEMM but changes the materialized [M,2N] intermediate from FP32 to BF16.
+
+Architecture:
+
+```text
+BF16 X
+BF16 W_packed
+  -> cublasGemmEx, FP32 accumulate
+  -> BF16 packed workspace [M,2N]
+  -> convert gate/up to FP32 inside post-kernel
+  -> FP32 SwiGLU output [M,N]
+```
+
+This reduces packed intermediate write/read traffic by 2x while preserving FP32 final activation arithmetic.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **765 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- BF16 split kernel: 18 registers/thread, 0 shared memory, 0 spills.
+
+Performance versus V4 FP32 workspace:
+
+- 32 x 128 x 256: 15.328 us -> 15.200 us (~1.008x);
+- 128 x 512 x 512: 18.432 us -> 18.144 us (~1.016x);
+- 128 x 1024 x 4096: 54.160 us -> 52.688 us (~1.028x);
+- 512 x 1024 x 4096: 174.752 us -> 169.040 us (~1.034x);
+- 512 x 4096 x 4096: 583.488 us -> 577.536 us (~1.010x).
+
+Numerical trade-off:
+
+Against the BF16-workspace PyTorch reference, V5 is bit-identical in the tested cases.
+
+Against V4's higher-precision FP32-workspace reference, V5 introduces additional quantization:
+
+- 128 x 1024 x 4096: mean abs ~0.621, mean relative ~0.27%, P99 relative ~1.99%;
+- 512 x 4096 x 4096: mean abs ~2.49, mean relative ~0.25%, P99 relative ~1.79%.
+
+Decision: retain V5 as a validated memory-bandwidth experiment, but do not replace V4 as the preferred quality/performance path. The 1–3% speed gain is too small relative to the extra intermediate quantization.
