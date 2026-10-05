@@ -49,5 +49,17 @@ cp -as "$CRT_DEV/targets/x86_64-linux/include/." \
 cp -as "$CUDART_DEV/targets/x86_64-linux/lib/." \
   "$OUT/targets/x86_64-linux/lib/"
 
+# CUDA 12.x device headers depend on matching CCCL/libcu++ headers.
+# Link these explicitly so nvcc never falls back to an incompatible
+# system /usr/include/nv/target.
+for subdir in nv cuda cub thrust; do
+  src="$CCCL_DEV/targets/x86_64-linux/include/$subdir"
+  dst="$OUT/targets/x86_64-linux/include/$subdir"
+  if [[ -d "$src" ]]; then
+    rm -rf "$dst"
+    ln -s "$src" "$dst"
+  fi
+done
+
 echo "$OUT"
 "$OUT/bin/nvcc" --version | tail -n 4
