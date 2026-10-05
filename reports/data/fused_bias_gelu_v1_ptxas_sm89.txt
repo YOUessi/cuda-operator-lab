@@ -1,0 +1,11 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN51_GLOBAL__N__95d1c671_18_fused_bias_gelu_cu_df902a5e32fused_bias_gelu_v1_float4_kernelEPK6float4S2_PS0_mm' for 'sm_89'
+ptxas info    : Function properties for _ZN51_GLOBAL__N__95d1c671_18_fused_bias_gelu_cu_df902a5e32fused_bias_gelu_v1_float4_kernelEPK6float4S2_PS0_mm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 37 registers, used 0 barriers, 392 bytes cmem[0]
+ptxas info    : Compile time = 5.534 ms
+ptxas info    : Compiling entry function '_ZN51_GLOBAL__N__95d1c671_18_fused_bias_gelu_cu_df902a5e25fused_bias_gelu_v0_kernelEPKfS1_Pfmm' for 'sm_89'
+ptxas info    : Function properties for _ZN51_GLOBAL__N__95d1c671_18_fused_bias_gelu_cu_df902a5e25fused_bias_gelu_v0_kernelEPKfS1_Pfmm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers, 392 bytes cmem[0]
+ptxas info    : Compile time = 3.790 ms
