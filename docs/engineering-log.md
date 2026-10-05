@@ -1253,3 +1253,46 @@ Robust autotune first-use cost:
 - 512 x 4096 x 4096: ~53.7 ms.
 
 Conclusion: V6 is appropriate for repeated fixed-shape workloads where one-time tuning is amortized. It is not an unconditional one-shot default. This mirrors production GEMM runtimes: algorithm selection is itself part of the performance problem.
+
+## GEMM + SwiGLU V0 baseline
+
+The next MLP case study is a dual-projection SwiGLU path:
+
+```text
+gate = X @ W_gate^T
+up   = X @ W_up^T
+Y    = SiLU(gate) * up
+```
+
+V0 uses:
+
+- two cuBLAS SGEMM calls on the active CUDA stream;
+- caller-provided preallocated workspace for the up projection;
+- the output buffer temporarily stores the gate projection;
+- one custom fused in-place SwiGLU kernel;
+- no allocation or transpose buffer inside the C ABI call.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **721 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- max observed error: 0.
+
+ptxas for the fused SwiGLU post-kernel:
+
+- 22 registers/thread;
+- 0 B shared memory;
+- 0 spills.
+
+Fair preallocated PyTorch comparison:
+
+- 32 x 128 x 256: V0 27.648 us vs PyTorch 25.600 us;
+- 128 x 512 x 512: 35.840 us vs 33.792 us;
+- 128 x 1024 x 4096: 148.480 us vs 145.408 us;
+- 512 x 1024 x 4096: 528.384 us vs 530.432 us;
+- 512 x 4096 x 4096: 2365.440 us vs 2362.464 us.
+
+Conclusion: once allocations are removed, the baseline is already approximately equal to PyTorch. The dominant cost is the two GEMMs, not the final SwiGLU pointwise kernel.
