@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import gemm_bias_gelu_v0_into, gemm_bias_gelu_v1_into
+from cuda_operator_lab.bindings import gemm_bias_gelu_v0_into, gemm_bias_gelu_v1_into, gemm_bias_gelu_v2_into
 from cuda_operator_lab.references import gemm_bias_gelu
 
 
@@ -64,6 +64,7 @@ def main() -> None:
         variants = [
             ("v0_scalar_epilogue", gemm_bias_gelu_v0_into),
             ("v1_float4_epilogue", gemm_bias_gelu_v1_into),
+            ("v2_cublaslt_fused", gemm_bias_gelu_v2_into),
         ]
         torch_alloc = measure_us(
             lambda: gemm_bias_gelu(x, weight, bias),
