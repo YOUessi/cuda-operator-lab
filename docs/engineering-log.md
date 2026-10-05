@@ -1501,3 +1501,46 @@ Representative FP32 packed V2 -> BF16 Tensor Core V4:
 Accuracy is measured against a BF16-input, dequantized-FP32 matmul/SwiGLU reference. Mean absolute errors remain small; max absolute error grows with output dynamic range, reaching ~0.57 on the largest case.
 
 The remaining performance gap to native PyTorch BF16 is primarily consistent with writing/reading an FP32 [M,2N] intermediate. Next target: BF16 workspace with FP32 final output.
+
+## GEMM + SwiGLU V4 BF16 Tensor Core packed GEMM
+
+V4 keeps the packed single-projection architecture introduced in V2, but changes the GEMM precision path:
+
+- input: BF16;
+- packed weight [2N,K]: BF16;
+- GEMM accumulate: FP32 via cublasGemmEx;
+- packed workspace [M,2N]: FP32;
+- final SwiGLU output [M,N]: FP32;
+- post-SwiGLU kernel: unchanged scalar packed split kernel.
+
+This isolates Tensor Core GEMM throughput from post-kernel changes.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **756 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors.
+
+Representative V2 FP32 packed -> V4 BF16 Tensor Core:
+
+- 32 x 128 x 256: 16.032 us -> 14.464 us (~1.11x);
+- 128 x 512 x 512: 28.320 us -> 18.432 us (~1.54x);
+- 128 x 1024 x 4096: 122.912 us -> 54.112 us (~2.27x);
+- 512 x 1024 x 4096: 416.368 us -> 207.696 us (~2.01x);
+- 512 x 4096 x 4096: 2221.056 us -> 680.752 us (~3.26x).
+
+Compared with PyTorch BF16 native packed matmul + SwiGLU, V4 is near the same regime and sometimes faster on smaller/mid shapes.
+
+Numerical interpretation must match the BF16 model semantics. Against a FP32 computation on the BF16-dequantized input/weight:
+
+- 512 x 4096 x 4096 output abs max: ~4.93e4;
+- abs error mean: ~1.23e-2;
+- abs error P99: 0.125;
+- relative error P99: ~3.16e-4;
+- torch.allclose(rtol=1e-2, atol=1e-1): true.
+
+The maximum relative error is dominated by near-zero reference outputs and is not representative of the bulk distribution.
+
+Conclusion: BF16 Tensor Core packed GEMM is a major architectural speedup for BF16 transformer weights/activations, with FP32 accumulation preserving useful numerical quality.
