@@ -267,6 +267,19 @@ class _Library:
         ]
         self.handle.cuda_operator_gemm_bias_gelu_v6.restype = ctypes.c_int
 
+        self.handle.cuda_operator_gemm_swiglu_v0.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+        ]
+        self.handle.cuda_operator_gemm_swiglu_v0.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -1885,3 +1898,61 @@ def gemm_bias_gelu_v6(
         dtype=torch.float32,
     )
     return gemm_bias_gelu_v6_into(x, weight, bias, out)
+
+
+def gemm_swiglu_v0_into(
+    x: torch.Tensor,
+    gate_weight: torch.Tensor,
+    up_weight: torch.Tensor,
+    workspace: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    if not all(t.is_cuda for t in (x, gate_weight, up_weight, workspace, out)):
+        raise ValueError("GEMM SwiGLU tensors must be CUDA tensors")
+    if x.ndim != 2 or gate_weight.ndim != 2 or up_weight.ndim != 2:
+        raise ValueError("x and weights must be 2-D")
+    if gate_weight.shape != up_weight.shape:
+        raise ValueError("gate_weight and up_weight must have the same shape")
+    if x.shape[1] != gate_weight.shape[1]:
+        raise ValueError("x.shape[1] must equal weight.shape[1]")
+    expected_shape = (x.shape[0], gate_weight.shape[0])
+    if workspace.shape != expected_shape or out.shape != expected_shape:
+        raise ValueError(f"workspace and output shape must be {expected_shape}")
+    if any(t.dtype != torch.float32 for t in (x, gate_weight, up_weight, workspace, out)):
+        raise TypeError("GEMM SwiGLU currently supports float32 only")
+    if not all(t.is_contiguous() for t in (x, gate_weight, up_weight, workspace, out)):
+        raise ValueError("all GEMM SwiGLU tensors must be contiguous")
+    if workspace.data_ptr() == out.data_ptr():
+        raise ValueError("workspace and output must not alias")
+
+    m, k = x.shape
+    n = gate_weight.shape[0]
+    if m == 0 or n == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_gemm_swiglu_v0(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(gate_weight.data_ptr()),
+        ctypes.c_void_p(up_weight.data_ptr()),
+        ctypes.c_void_p(workspace.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(m),
+        ctypes.c_uint64(k),
+        ctypes.c_uint64(n),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def gemm_swiglu_v0(
+    x: torch.Tensor,
+    gate_weight: torch.Tensor,
+    up_weight: torch.Tensor,
+) -> torch.Tensor:
+    shape = (x.shape[0], gate_weight.shape[0])
+    workspace = torch.empty(shape, device=x.device, dtype=torch.float32)
+    out = torch.empty(shape, device=x.device, dtype=torch.float32)
+    return gemm_swiglu_v0_into(x, gate_weight, up_weight, workspace, out)
