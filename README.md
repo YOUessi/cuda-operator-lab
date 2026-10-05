@@ -1,342 +1,319 @@
-# CUDA Operator Optimization & Profiling Lab
+# CUDA Operator Lab
 
-A profile-guided CUDA operator engineering project on a real NVIDIA GPU.
+面向 Transformer 工作负载的 CUDA 算子优化、算子融合与 GPU Runtime 实验仓库。
 
-## Goal
+这个项目不是“写几个 CUDA kernel 看谁快”，而是完整走了一遍 GPU 性能工程流程：
 
-Build a reproducible optimization loop:
+```text
+PyTorch Reference
+    ↓
+Naive CUDA Baseline
+    ↓
+Correctness / Sanitizer
+    ↓
+CUDA Event Benchmark
+    ↓
+Bottleneck Analysis
+    ↓
+Shared Memory / Warp Shuffle / Vectorized IO / Fusion
+    ↓
+cuBLAS / cuBLASLt / Tensor Core / WMMA
+    ↓
+Stable Crossover Profiling
+    ↓
+Generated Hardware Policy
+    ↓
+Hybrid Runtime Dispatch
+```
 
-**PyTorch Reference → Naive CUDA → Correctness → Benchmark → Profiling → Bottleneck Analysis → Optimization → Re-benchmark**
+当前主线在 NVIDIA GeForce RTX 4090 Laptop GPU（Ada, SM 8.9）上验证，CUDA 12.8、PyTorch 2.10.0+cu128。最新完整测试：**816 passed**。
 
-The repository keeps meaningful intermediate kernels instead of publishing only a final implementation. Each optimization should answer three questions:
+> 重点不是某一个“最快 kernel”，而是：如何用真实 benchmark 找瓶颈、隔离变量、保留负结果，并最终让 runtime 根据硬件与 shape 自动选择执行路径。
 
-1. What profiler/benchmark observation exposed the bottleneck?
-2. What concrete CUDA change targets that bottleneck?
-3. Did correctness remain valid and did the measured result improve?
+## 项目做了什么
 
-## Operators
+仓库目前覆盖 8 条主要优化链。
 
-- Reduction
-- Softmax
-- RMSNorm
-- GEMM
-- Fused Residual + RMSNorm
+| Case study | 优化路径 | 当前结论 |
+|---|---|---|
+| Reduction | serial → atomic → shared reduction → warp shuffle → float4 → shape dispatch | 大输入最终接近 PyTorch，瓶颈转为内存吞吐 |
+| Softmax | serial row → block reduction → warp shuffle → width-aware → warp-per-row → dispatch | narrow-row packing 对高 row-count 有效，但不是全局最优 |
+| RMSNorm | serial row → block reduction → warp shuffle → float4 → profile dispatch | float4 强依赖 shape，需要硬件 profile |
+| LayerNorm | serial row → shared → warp shuffle → Welford → float4 → dispatch | 并行统计带来数量级提升；Welford 是数值实验而非默认最快路径 |
+| Residual + LayerNorm | fused serial → block → warp → float4 → dispatch | “融合”只有和正确的并行/IO 策略结合才真正变快 |
+| Bias + GELU | scalar fused → float4 → dispatch | pointwise fusion 本身就能消除中间 tensor / launch |
+| SwiGLU | scalar fused → float4 → dispatch | 大工作集可从向量化获益，小 shape 需保守 |
+| GEMM + Bias/GELU / SwiGLU | cuBLAS → cuBLASLt → BF16 TC → WMMA → hybrid runtime | 从 kernel tuning 进入 GEMM runtime / Tensor Core / policy engineering |
 
-## Current milestone: RMSNorm V2
+## 关键效果
 
-Reduction is complete as the first optimization case study. It contains six deliberately separated implementations:
+以下均来自仓库中提交的真实 RTX 4090 Laptop benchmark；完整数据见 [最终性能报告](reports/final-performance.md)。
 
-- **V0 serial:** one CUDA thread sums all values.
-- **V1 parallel atomic:** grid-stride local sums plus one global `atomicAdd` per participating thread.
-- **V2 shared memory:** full shared-memory tree reduction per block, then one global `atomicAdd` per block.
-- **V3 warp shuffle:** reduce inside each warp with `__shfl_down_sync`, store only one value per warp in shared memory, then use the first warp to finish the block reduction.
-- **V4 float4 loads:** keep the V3 reduction tree but consume aligned input four floats at a time with a 128-bit global load; unaligned contiguous tensors safely fall back to V3.
-- **V5 shape-aware dispatch:** size the vector grid from N/4 work items and use the vector path only from an empirically validated 512K crossover; smaller or unaligned inputs use V3.
-
-V5 keeps the V4 kernel body unchanged and fixes dispatch/launch policy: vector blocks are computed from N/4 float4 work items rather than scalar N. A conservative 524,288-element crossover is used because cross-regime sweeps showed small-shape results were cache-state sensitive.
-
-Implemented now:
-
-- PyTorch `torch.sum` reference.
-- CUDA V0 / V1 / V2 / V3 / V4 / V5 kernels behind a small C ABI.
-- Zero-copy PyTorch/ctypes binding using raw CUDA pointers and the active PyTorch CUDA stream.
-- Correctness coverage for empty, warp-boundary, block-boundary, odd, signed and million-element inputs.
-- Reused-output reset and non-default CUDA stream tests.
-- CUDA-event benchmark with warmup, repeated measurements, P50/P95 and numerical-error tracking.
-- Hot-cache and L2-evicted benchmark modes.
-- CUDA 12.8 / SM 8.9 ptxas resource capture.
-- CUDA 12.8 Compute Sanitizer memcheck + synccheck validation.
-
-### V3 resource change
-
-| Variant | Registers / thread | Shared memory / block | Global atomics / block |
+| 场景 | Baseline | 最终/代表实现 | 结果 |
 |---|---:|---:|---:|
-| V2 shared memory | 12 | 1,024 B | 1 |
-| V3 warp shuffle | 13 | **32 B** | 1 |
+| Reduction, N=16,777,216 | V0 608,030.7 us | V5 168.1 us | **~3,618×** vs naive；约等于 PyTorch 170.0 us |
+| Softmax, 128×4096 | V0 1,595.4 us | warp/block optimized ~14 us 级 | **>100×** vs serial baseline |
+| RMSNorm, 128×8192 | V0 1,692.5 us | V4 12.0 us | **~140.7×** |
+| LayerNorm, 128×4096 | V0 1,317.1 us | V5 17.3 us | **~75.9×** |
+| Residual+LayerNorm, 128×4096 | V0 1,874.4 us | V4 23.2 us | **~80.8×** |
+| Bias+GELU, 1024×4096 | PyTorch unfused 33.8 us | float4 fused 20.5 us | **~1.65×** |
+| SwiGLU, 1024×4096 | PyTorch unfused 35.9 us | float4 fused 20.5 us | **~1.75×** |
+| GEMM+SwiGLU, 512×4096×4096 | FP32 packed 2,246.7 us | BF16 Tensor Core 669.7 us | **~3.35×** |
+| GEMM+SwiGLU, 128×64×2048 | cuBLAS BF16 17.2 us | hybrid custom WMMA 13.1 us | **~1.32×** |
 
-V3 reduces block shared-memory footprint by **32x** while keeping zero spills.
+这些数字不能被理解成“自定义 CUDA 永远比 PyTorch/cuBLAS 快”。恰恰相反，本项目的一个核心结论是：
 
-### RTX 4090 Laptop: V2 → V3
+- 小、launch-dominated workload：自定义 fused kernel / WMMA 可能更好；
+- 大、throughput-dominated GEMM：cuBLAS/cuBLASLt 通常更强；
+- 最好的工程实现往往是 **hybrid runtime**，而不是单一 kernel。
 
-For a more stable comparison, the canonical L2-evicted large-shape run uses 20 warmups + 100 timed repeats.
+## 架构演进
 
-| N | V2 shared memory | V3 warp shuffle | V2 → V3 | torch.sum | V3 / torch |
-|---:|---:|---:|---:|---:|---:|
-| 262,144 | 8.192 us | **7.168 us** | **1.14x** | 10.416 us | 0.69x |
-| 4,194,304 | 47.840 us | **47.104 us** | 1.02x | 48.128 us | 0.98x |
-| 16,777,216 | 177.152 us | 177.200 us | ~1.00x | 171.008 us | 1.04x |
-
-The result is intentionally not presented as “warp shuffle is always faster.” V3 helps when block-reduction overhead is still material, but the gain disappears at 64 MiB where the reduction is dominated by moving the input data rather than coordinating threads.
-
-That is the useful conclusion: **after V2, large-shape reduction is already primarily memory-throughput limited; V3 mainly reduces synchronization/shared-memory overhead for smaller and medium shapes.**
-
-### V4 vectorized-load result
-
-The aligned V4 path is verified in generated SM 8.9 SASS:
-
-```text
-LDG.E.128
+```mermaid
+flowchart LR
+    A[基础 CUDA Kernel] --> B[Reduction / Softmax]
+    B --> C[RMSNorm / LayerNorm]
+    C --> D[Operator Fusion]
+    D --> E[Residual+LayerNorm]
+    D --> F[Bias+GELU / SwiGLU]
+    F --> G[GEMM + Epilogue]
+    G --> H[cuBLAS / cuBLASLt]
+    H --> I[BF16 Tensor Core]
+    I --> J[Custom WMMA]
+    J --> K[Stable Crossover Profile]
+    K --> L[Hybrid Runtime]
+    L --> M[Generated Hardware Policy]
 ```
 
-so the compiler does emit a 128-bit global load for the `float4` path. A scalar load remains for the 0–3 element tail. V4 uses 16 registers/thread, 32 B shared memory/block, and zero spills.
+### GEMM + SwiGLU
 
-Canonical L2-evicted comparison, 20 warmups + 100 timed repeats:
-
-| N | V3 warp shuffle | V4 float4 | V3 → V4 | torch.sum | V4 / torch |
-|---:|---:|---:|---:|---:|---:|
-| 262,144 | **7.168 us** | 8.192 us | 0.88x | 10.240 us | 0.80x |
-| 4,194,304 | 46.896 us | **46.080 us** | 1.02x | 48.128 us | 0.96x |
-| 16,777,216 | 177.152 us | **168.960 us** | **1.05x** | 171.008 us | 0.99x |
-
-The optimization is shape-dependent. At 16M elements the 128-bit load path improves V3 by about 4.8% and matches PyTorch within roughly 1%. At 262K it regresses because the unchanged launch geometry now gives only one quarter of the threads vector work, while the rest still participate in block reduction.
-
-That gives the next bottleneck directly: V5 should make launch geometry / elements-per-thread shape-aware rather than blindly applying vector loads to every shape.
-
-### V5 shape-aware dispatch result
-
-V5 fixes the V4 grid mismatch without changing the float4 kernel body.
+这是目前最完整的一条深度优化链：
 
 ```text
-N < 524,288
-  -> V3 scalar warp-shuffle path
-
-N >= 524,288 and pointer % 16 == 0
-  -> V4 float4 kernel
-  -> blocks computed from N/4 vector work items
-
-unaligned
-  -> V3 fallback
+V0  two SGEMM + scalar SwiGLU
+V1  two SGEMM + float4 post
+V2  packed [2N,K] single GEMM
+V3  packed GEMM + float4 post
+V4  BF16 Tensor Core cuBLAS
+V5  BF16 workspace experiment
+V6  custom fused WMMA baseline
+V7  shared-A WMMA reuse
+V8  shared A+B staging      ← negative result
+V9  8-way A reuse
+V10 hybrid WMMA / cuBLAS runtime
+V11 generated hardware policy
 ```
 
-Final clean validation: **116 tests passed**.
+V11 已经形成完整闭环：
 
-L2-evicted, 20 warmups + 100 repeats:
+```mermaid
+flowchart LR
+    A[Kernel Variants] --> B[Direct GPU Profiling]
+    B --> C[Independent Runs]
+    C --> D[Repeated-evidence Gate]
+    D --> E[Policy Generator]
+    E --> F[generated_hybrid_policy.h]
+    F --> G[Runtime Dispatch]
+```
 
-| N | V3 scalar | V5 dispatch | torch.sum | V5 logical GB/s |
-|---:|---:|---:|---:|---:|
-| 524,288 | 10.256 us | 10.240 us | 12.288 us | 204.800 |
-| 1,048,576 | 17.008 us | **15.376 us** | 17.408 us | 272.783 |
-| 4,194,304 | 47.104 us | **45.152 us** | 48.128 us | 371.572 |
-| 16,777,216 | 176.128 us | **167.936 us** | 170.896 us | 399.610 |
-
-The detailed step-by-step record, including preliminary thresholds and all raw benchmark artifacts, is in `docs/experiment-log.md`.
-
-### Compute Sanitizer
-
-CUDA 12.8 Compute Sanitizer on a representative `N=1,000,003` signed float32 input:
-
-- memcheck: 0 errors
-- racecheck: 0 hazards / 0 errors
-- synccheck: 0 errors
-- unaligned contiguous V4 fallback memcheck: 0 errors
-
-
-### Softmax V0 -> V1
-
-The second operator has started with an intentionally simple row-wise baseline:
+当前 RTX 4090 Laptop 的生成策略来自 **120 个实测 shape × 2 个独立 run**：
 
 ```text
-one CUDA thread per row
--> serial max
--> serial exp + sum
--> serial normalize
+M <= 128
+K <= 128
+N <= 2048
++ WMMA alignment constraints
+    -> custom V7
+
+otherwise
+    -> cuBLAS BF16 V4
 ```
 
-Clean RTX 4090 Laptop validation:
+换一块 GPU 时，不需要手改 CUDA kernel，只需重新运行 crossover profiler 并重新生成 policy。
 
-- full repository test suite: **131 passed**;
-- Compute Sanitizer memcheck / racecheck / synccheck: clean;
-- ptxas: 24 registers/thread, 0 spills.
+## Benchmark 方法
 
-The V0 width bottleneck is intentionally obvious: `128 × 4096` takes about 1.6 ms. V1 assigns one 256-thread block per row and uses shared-memory max/sum reductions. The post-race-fix benchmark reduces `128 × 4096` from **1,614.752 us to 14.336 us** (>112x), while `1024 × 4096` reaches **37.888 us vs 36.960 us** for PyTorch.
+项目没有用单次“最快时间”下结论。
 
-V1 hardware validation also found and fixed a shared-memory reuse race through Compute Sanitizer Racecheck; post-fix memcheck/racecheck/synccheck are clean.
+### 计时
 
-Detailed operation history and raw artifacts are in `docs/experiment-log.md` and `reports/data/softmax_v0_*`.
+- CUDA Event 计时；
+- warmup 后重复采样；
+- 主要看 median，并保留 P95；
+- PyTorch / cuBLAS 对照尽量预分配 output/workspace，避免把 allocator 开销伪装成 kernel 收益。
 
-### Softmax V2 warp-shuffle reduction
+### Cache / GPU 状态
 
-V2 keeps one 256-thread block per row but replaces the two full shared-memory trees with warp-shuffle reductions.
+Reduction、Norm、dispatch 等关键决策使用过：
 
-Validation on the RTX 4090 Laptop:
+- 64 MiB / 128 MiB L2 eviction buffer；
+- sample-level interleaving；
+- variant order 交错/随机；
+- 多轮 round median；
+- 多 independent seed。
 
-- full repository suite: **180 passed**;
-- memcheck: 0 errors;
-- racecheck: 0 hazards / 0 errors;
-- synccheck: 0 errors;
-- shared memory: **1,024 B -> 32 B** per block;
-- ptxas: 23 registers/thread, 0 spills.
+```text
+V2, V3, V3, V2, ...
+```
 
-Stable 100-repeat results:
+而不是：
 
-| Shape | V1 | V2 | PyTorch |
-|---:|---:|---:|---:|
-| 1024 x 128 | 14.336 us | **10.240 us** | 8.096 us |
-| 1024 x 512 | 16.192 us | **12.256 us** | 8.192 us |
-| 1024 x 4096 | 41.792 us | **39.600 us** | 36.608 us |
+```text
+V2 x 100
+then
+V3 x 100
+```
 
-The win is shape-dependent; 128 x 512 slightly regresses. That points to the next experiment: width-aware thread-count dispatch rather than assuming 256 threads per row is optimal.
+这样降低 cache、DVFS、boost、温度和测试顺序对结论的影响。
 
-### Softmax V3 width-aware experiment
+### Dispatch acceptance
 
-V3 tested 32 / 64 / 128 / 256-thread blocks according to row width while keeping V2's warp-shuffle reductions unchanged.
+典型策略不是“快过一次就启用”，而是：
 
-Hardware validation:
+```text
+speedup >= 1.05x
+in every independent run
+```
 
-- **209 tests passed**;
-- memcheck / racecheck / synccheck clean;
-- same ptxas footprint as V2: 23 registers/thread, 32 B shared memory/block.
+未测 shape / 不稳定 shape 默认回退到安全 baseline。
 
-The result is intentionally retained as a negative/shape-sensitive experiment. Stable measurements showed no universal gain and regressions at some narrow shapes (for example 1024 x 64).
+## Correctness 与 CUDA 安全
 
-This redirects the small-row design toward **one warp per row, multiple rows per 256-thread block**, rather than shrinking one row's block.
+核心路径同时验证：
 
-### Softmax V4 warp-per-row packing
+- PyTorch reference / float64 reference；
+- `torch.testing.assert_close`；
+- empty / odd / boundary shapes；
+- preallocated output；
+- active non-default CUDA stream；
+- alignment / scalar fallback。
 
-For rows with at most 128 columns, V4 keeps a 256-thread block but assigns each of its eight warps to a different row. The packed path uses only warp shuffles: **0 B shared memory and no block-wide barriers**.
+CUDA Compute Sanitizer：
 
-Clean RTX 4090 validation: **229 tests passed**; memcheck / racecheck / synccheck are clean.
+```text
+memcheck
+racecheck
+synccheck
+```
 
-20-warmup / 100-repeat results:
+同时保存 ptxas 资源数据：
 
-| Shape | V3 width-aware | V4 packed | Speedup |
-|---:|---:|---:|---:|
-| 4096 x 32 | 11.024 us | **10.240 us** | 1.08x |
-| 4096 x 128 | 14.336 us | **11.136 us** | 1.29x |
-| 16384 x 32 | 19.392 us | **13.952 us** | 1.39x |
-| 16384 x 128 | 32.752 us | **19.136 us** | **1.71x** |
+- registers / thread；
+- shared memory / block；
+- spill stores / loads。
 
-The packed layout is not universal: `128 x 128` regresses from 10.480 us to 11.152 us. The next step is an empirical V3/V4 dispatcher based on row-count/width crossover data, not a guessed threshold.
+例如项目曾通过 racecheck 找到 Softmax shared-buffer reuse 的同步错误，而不是只依赖“测试看起来算对”。
 
-## Quick start
+## 一条命令跑核心 Benchmark
+
+先构建：
 
 ```bash
 ./scripts/build.sh
 ./scripts/test.sh
-
-PYTHONPATH=$PWD/python \
-python3 benchmarks/softmax_benchmark.py \
-  --variants v2_warp_shuffle v3_width_aware
 ```
 
-## Local target
+然后：
 
-- GPU: NVIDIA GeForce RTX 4090 Laptop GPU
-- Compute capability: 8.9 (Ada)
-- L2 cache: 64 MiB
-- Driver: 580.178.04
-- PyTorch: 2.10.0+cu128
-- CUDA runtime reported by PyTorch: 12.8
+```bash
+./scripts/benchmark_all.sh
+```
 
-The machine-wide `/usr/bin/nvcc` is CUDA 11.5 and does not support `sm_89`. The repository therefore assembles a local CUDA 12.8 toolkit view under `.cuda-toolkit/` from the already-installed Anaconda package cache. Generated toolkit files are ignored by Git.
-
-
-### Softmax V5 empirical dispatcher
-
-V5 finalizes the narrow-row execution policy instead of applying V4 packing universally.
+默认运行一组代表 shape，并输出：
 
 ```text
-cols <= 64 and rows >= 4096
-  -> 8 packed rows / 256-thread block
-
-65 <= cols <= 128 and rows >= 2048
-  -> packed-row path
-
-otherwise
-  -> V3 width-aware path
+benchmarks/results/final_suite/
+├── reduction.csv
+├── softmax.csv
+├── rmsnorm.csv
+├── layernorm.csv
+├── fused_residual_layernorm.csv
+├── fused_bias_gelu.csv
+├── swiglu.csv
+├── gemm_bias_gelu.csv
+├── gemm_swiglu.csv
+└── summary.md
 ```
 
-Clean RTX 4090 validation: **250 tests passed**; memcheck / racecheck / synccheck are clean.
+也可以直接：
 
-Representative final results:
+```bash
+PYTHONPATH=$PWD/python python3 benchmarks/run_all.py
+```
 
-| Shape | V3 | V5 |
-|---:|---:|---:|
-| 2048 x 128 | 11.264 us | **10.592 us** |
-| 4096 x 64 | 11.264 us | **10.496 us** |
-| 4096 x 128 | 14.336 us | **10.912 us** |
-| 16384 x 128 | 32.704 us | **18.528 us** |
-
-The thresholds come from a dedicated row-count crossover sweep; the complete history, including the benchmark-metadata fix discovered during validation, is retained in `docs/experiment-log.md`.
-
-Next operator: **RMSNorm**.
-
-
-### RMSNorm V0 baseline
-
-The third operator now has a validated serial-row baseline:
+## 仓库结构
 
 ```text
-one CUDA thread per row
-  -> sum(x^2)
-  -> rsqrt(mean + eps)
-  -> x * inverse_rms * weight
+cuda-operator-lab/
+├── csrc/
+│   ├── reduction/
+│   ├── softmax/
+│   ├── rmsnorm/
+│   ├── layernorm/
+│   ├── fused_residual_layernorm/
+│   ├── fused_bias_gelu/
+│   ├── swiglu/
+│   ├── gemm_bias_gelu/
+│   └── gemm_swiglu/
+├── python/cuda_operator_lab/     # ctypes / PyTorch zero-copy bindings
+├── tests/                        # correctness + boundary + stream tests
+├── benchmarks/                   # benchmark / stable profile / policy generation
+├── reports/data/                 # raw hardware measurements
+├── reports/final-performance.md  # final performance summary
+├── docs/engineering-log.md       # implementation-oriented record
+├── docs/experiment-log.md        # chronological experiment ledger
+└── scripts/
 ```
 
-RTX 4090 Laptop validation:
+## 负结果也保留
 
-- clean CUDA 12.8 / SM 8.9 build: PASS;
-- full repository suite: **268 passed**;
-- Compute Sanitizer memcheck / racecheck / synccheck: clean;
-- ptxas: 20 registers/thread, 0 spills.
+仓库不会删除“不够快”的实验，因为它们解释了为什么最终实现是现在这样。
 
-Representative timings:
+代表性例子：
 
-| Shape | V0 | PyTorch reference |
-|---:|---:|---:|
-| 128 x 128 | 40.960 us | 24.576 us |
-| 128 x 1024 | 270.336 us | 24.576 us |
-| 128 x 4096 | 1,035.216 us | 27.648 us |
-| 128 x 8192 | 1,691.936 us | 26.624 us |
+- Welford LayerNorm：数值更稳，但 double accumulation 性能代价过大；
+- float4：并非所有 shape 都更快；
+- SwiGLU post-kernel vectorization：GEMM 主导时收益很小；
+- BF16 workspace：只快 1–3%，却增加中间量化误差；
+- WMMA shared A+B staging：更多 shared-memory reuse 反而严重退化；
+- 8-warp tile：大 GEMM略改善，小 GEMM退化。
 
-The hidden-width bottleneck is intentionally exposed. Next: block-parallel RMSNorm V1.
+这些结果最终导向了 profile-guided / hybrid runtime，而不是“一种 kernel 统治所有 shape”。
 
+## 环境
 
-### RMSNorm V1 block-parallel result
-
-V1 changes only intra-row execution:
+主要实测环境：
 
 ```text
-one 256-thread block per row
-  -> strided local sum(x^2)
-  -> shared-memory reduction
-  -> inverse RMS
-  -> parallel normalize * weight
+GPU: NVIDIA GeForce RTX 4090 Laptop GPU
+Architecture: Ada, SM 8.9
+Driver: 580.178.04
+CUDA compiler: 12.8.93
+PyTorch: 2.10.0+cu128
+L2 cache: 64 MiB
 ```
 
-RTX 4090 validation:
+机器系统 `/usr/bin/nvcc` 较旧，因此仓库提供：
 
-- full repository suite: **290 passed**;
-- memcheck / racecheck / synccheck: clean;
-- ptxas: 18 registers/thread, 1,024 B shared memory/block, 0 spills.
+```bash
+./scripts/bootstrap_cuda_toolkit.sh
+```
 
-Representative V0 -> V1:
+用于从已有 CUDA 12.8 包组装项目本地 `.cuda-toolkit/`。
 
-| Shape | V0 | V1 |
-|---:|---:|---:|
-| 128 x 512 | 144.560 us | **10.272 us** |
-| 128 x 1024 | 279.552 us | **10.464 us** |
-| 128 x 4096 | 1,037.120 us | **14.080 us** |
-| 128 x 8192 | 1,692.320 us | **17.408 us** |
+## 进一步阅读
 
-Next: RMSNorm V2 warp-shuffle reduction. The PyTorch expression shown in raw benchmarks is a multi-op correctness reference, not an optimized fused vendor RMSNorm baseline.
+- [最终性能总表](reports/final-performance.md)
+- [完整实验流水账](docs/experiment-log.md)
+- [工程实现记录](docs/engineering-log.md)
+- [原始 benchmark 数据](reports/data/)
 
+## 项目定位
 
-### RMSNorm V2 warp-shuffle reduction
+这个仓库最终关注的是三个层次：
 
-V2 reduces the V1 block tree to eight warp partials:
+1. **Kernel optimization**：线程组织、shared memory、warp shuffle、vectorized IO；
+2. **Operator / GEMM fusion**：减少 launch 与中间 materialization；
+3. **Runtime optimization**：vendor library、自定义 Tensor Core kernel、autotune、hardware-specific dispatch。
 
-- **313 tests passed**;
-- sanitizer clean;
-- shared memory: **1,024 B -> 32 B**;
-- ptxas: 17 registers/thread, 0 spills.
-
-Representative V1 -> V2:
-
-| Shape | V1 | V2 |
-|---:|---:|---:|
-| 128 x 4096 | 14.160 us | **13.312 us** |
-| 1024 x 512 | 11.904 us | **11.200 us** |
-| 2048 x 4096 | 58.368 us | **52.688 us** |
-
-The gain is modest and shape-dependent; 128 x 512 slightly regresses. Next: vectorized RMSNorm IO while preserving the V2 reduction structure.
+最终目标不是证明“手写 CUDA 一定比库快”，而是建立一个可以复现、验证和部署的 GPU 性能工程流程。
