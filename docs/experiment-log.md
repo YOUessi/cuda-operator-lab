@@ -4611,3 +4611,90 @@ Artifacts:
 - reports/data/gemm_swiglu_v4_v7_crossover_seed1_rtx4090.csv
 - reports/data/gemm_swiglu_v4_v7_crossover_seed2_rtx4090.csv
 - reports/data/gemm_swiglu_v10_hybrid_rtx4090.csv
+
+## E46 — GEMM + SwiGLU V11: generated hardware policy
+
+Status: **validated reproducibility/runtime-policy refactor**
+
+### Problem
+
+V10 proved the hybrid runtime, but encoded RTX 4090 Laptop crossover bounds directly in C++.
+
+That is correct for the measured hardware but not a reusable engineering workflow.
+
+### Generator
+
+Added:
+
+`benchmarks/generate_gemm_swiglu_hybrid_policy.py`
+
+Inputs:
+
+- V4/V7 crossover CSV from seed 1;
+- V4/V7 crossover CSV from seed 2;
+- acceptance threshold = 1.05x.
+
+The generator aggregates direct speedups and searches for the largest conservative rectangular region whose every measured point passes the threshold in every run.
+
+### Reproduction result
+
+```text
+measured shapes: 120
+independent runs: 2
+generated region:
+
+M <= 128
+K <= 128
+N <= 2048
+```
+
+This exactly matches the V10 hand-derived rule.
+
+### Runtime change
+
+V11 includes:
+
+`csrc/gemm_swiglu/generated_hybrid_policy.h`
+
+and dispatches through:
+
+`gemm_swiglu_use_custom_v7(m,k,n)`
+
+No kernel body changes were made.
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 816 passed
+V10/V11 output maxdiff: 0 for all tested paths
+```
+
+Steady-state comparison:
+
+| M x K x N | V10 | V11 |
+|---:|---:|---:|
+| 16 x 64 x 64 | 12.288 | 12.288 |
+| 32 x 128 x 256 | 12.784 | 12.544 |
+| 64 x 128 x 1024 | 13.312 | 13.312 |
+| 128 x 64 x 2048 | 13.248 | 13.312 |
+| 32 x 256 x 64 | 15.360 | 15.360 |
+| 128 x 512 x 512 | 19.200 | 19.072 |
+| 128 x 1024 x 4096 | 54.224 | 54.272 |
+| 512 x 1024 x 4096 | 174.816 | 174.928 |
+
+Differences are measurement noise; both versions execute identical underlying kernels.
+
+### Engineering conclusion
+
+The GEMM+SwiGLU optimization process now has a complete deployment loop:
+
+```text
+kernel variants
+-> direct hardware profiling
+-> repeated-evidence acceptance
+-> generated hardware policy
+-> runtime hybrid dispatch
+```
+
+To retarget another GPU, rerun the profiler and regenerate the policy instead of editing CUDA source manually.
