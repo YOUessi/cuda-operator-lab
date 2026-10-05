@@ -677,6 +677,98 @@ __global__ void gemm_swiglu_v8_shared_ab_kernel(
       wmma::mem_row_major);
 }
 
+__global__ void gemm_swiglu_v9_shared_a_8warp_kernel(
+    const __nv_bfloat16* input,
+    const __nv_bfloat16* gate_weight,
+    const __nv_bfloat16* up_weight,
+    float* output,
+    int m,
+    int k,
+    int n) {
+  using namespace nvcuda;
+
+  __shared__ __nv_bfloat16 shared_a[16 * 16];
+
+  const int warp_id = static_cast<int>(threadIdx.x) / 32;
+  const int tile_m = static_cast<int>(blockIdx.y) * 16;
+  const int tile_n = static_cast<int>(blockIdx.x) * 128 + warp_id * 16;
+
+  wmma::fragment<
+      wmma::matrix_a,
+      16,
+      16,
+      16,
+      __nv_bfloat16,
+      wmma::row_major> a_frag;
+  wmma::fragment<
+      wmma::matrix_b,
+      16,
+      16,
+      16,
+      __nv_bfloat16,
+      wmma::col_major> gate_frag;
+  wmma::fragment<
+      wmma::matrix_b,
+      16,
+      16,
+      16,
+      __nv_bfloat16,
+      wmma::col_major> up_frag;
+  wmma::fragment<
+      wmma::accumulator,
+      16,
+      16,
+      16,
+      float> gate_acc;
+  wmma::fragment<
+      wmma::accumulator,
+      16,
+      16,
+      16,
+      float> up_acc;
+
+  wmma::fill_fragment(gate_acc, 0.0F);
+  wmma::fill_fragment(up_acc, 0.0F);
+
+  for (int kk = 0; kk < k; kk += 16) {
+    const int idx = static_cast<int>(threadIdx.x);
+    const int row = idx / 16;
+    const int col = idx - row * 16;
+    shared_a[idx] =
+        input[static_cast<std::uint64_t>(tile_m + row) * k + kk + col];
+
+    __syncthreads();
+
+    wmma::load_matrix_sync(a_frag, shared_a, 16);
+
+    const __nv_bfloat16* gate_ptr =
+        gate_weight + static_cast<std::uint64_t>(tile_n) * k + kk;
+    const __nv_bfloat16* up_ptr =
+        up_weight + static_cast<std::uint64_t>(tile_n) * k + kk;
+
+    wmma::load_matrix_sync(gate_frag, gate_ptr, k);
+    wmma::load_matrix_sync(up_frag, up_ptr, k);
+
+    wmma::mma_sync(gate_acc, a_frag, gate_frag, gate_acc);
+    wmma::mma_sync(up_acc, a_frag, up_frag, up_acc);
+
+    __syncthreads();
+  }
+
+  #pragma unroll
+  for (int i = 0; i < gate_acc.num_elements; ++i) {
+    gate_acc.x[i] = silu(gate_acc.x[i]) * up_acc.x[i];
+  }
+
+  float* out_ptr =
+      output + static_cast<std::uint64_t>(tile_m) * n + tile_n;
+  wmma::store_matrix_sync(
+      out_ptr,
+      gate_acc,
+      n,
+      wmma::mem_row_major);
+}
+
 }  // namespace
 
 extern "C" int cuda_operator_gemm_swiglu_v0(
@@ -1134,6 +1226,50 @@ extern "C" int cuda_operator_gemm_swiglu_v8(
   const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
 
   gemm_swiglu_v8_shared_ab_kernel<<<grid, block, 0, cuda_stream>>>(
+      reinterpret_cast<const __nv_bfloat16*>(input_bf16),
+      reinterpret_cast<const __nv_bfloat16*>(gate_weight_bf16),
+      reinterpret_cast<const __nv_bfloat16*>(up_weight_bf16),
+      output,
+      static_cast<int>(m),
+      static_cast<int>(k),
+      static_cast<int>(n));
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_swiglu_v9(
+    const void* input_bf16,
+    const void* gate_weight_bf16,
+    const void* up_weight_bf16,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  if (m == 0 || n == 0) {
+    return static_cast<int>(cudaSuccess);
+  }
+  if (input_bf16 == nullptr || gate_weight_bf16 == nullptr ||
+      up_weight_bf16 == nullptr || output == nullptr || k == 0) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  if ((m % 16) != 0 || (k % 16) != 0 || (n % 128) != 0) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  if (m > static_cast<std::uint64_t>(INT32_MAX) ||
+      n > static_cast<std::uint64_t>(INT32_MAX) ||
+      k > static_cast<std::uint64_t>(INT32_MAX)) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+
+  const dim3 grid(
+      static_cast<unsigned int>(n / 128),
+      static_cast<unsigned int>(m / 16),
+      1U);
+  const dim3 block(256U, 1U, 1U);
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  gemm_swiglu_v9_shared_a_8warp_kernel<<<grid, block, 0, cuda_stream>>>(
       reinterpret_cast<const __nv_bfloat16*>(input_bf16),
       reinterpret_cast<const __nv_bfloat16*>(gate_weight_bf16),
       reinterpret_cast<const __nv_bfloat16*>(up_weight_bf16),
