@@ -244,3 +244,28 @@ def gemm_swiglu_bf16_workspace_reference(
     gate = packed_bf16[:, :n].float()
     up = packed_bf16[:, n:].float()
     return torch.nn.functional.silu(gate) * up
+
+
+def gemm_swiglu_bf16_dual_fp32_reference(
+    x_bf16: torch.Tensor,
+    gate_weight_bf16: torch.Tensor,
+    up_weight_bf16: torch.Tensor,
+) -> torch.Tensor:
+    """Reference for BF16 dual projections with FP32 matmul and SwiGLU output."""
+    if x_bf16.ndim != 2 or gate_weight_bf16.ndim != 2 or up_weight_bf16.ndim != 2:
+        raise ValueError("x and weights must be 2-D")
+    if gate_weight_bf16.shape != up_weight_bf16.shape:
+        raise ValueError("gate and up weights must have the same shape")
+    if x_bf16.shape[1] != gate_weight_bf16.shape[1]:
+        raise ValueError("inner dimensions must match")
+    if any(t.dtype != torch.bfloat16 for t in (x_bf16, gate_weight_bf16, up_weight_bf16)):
+        raise TypeError("reference expects BF16 tensors")
+    gate = torch.matmul(
+        x_bf16.float(),
+        gate_weight_bf16.float().transpose(0, 1),
+    )
+    up = torch.matmul(
+        x_bf16.float(),
+        up_weight_bf16.float().transpose(0, 1),
+    )
+    return torch.nn.functional.silu(gate) * up
