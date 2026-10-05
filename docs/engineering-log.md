@@ -1296,3 +1296,31 @@ Fair preallocated PyTorch comparison:
 - 512 x 4096 x 4096: 2365.440 us vs 2362.464 us.
 
 Conclusion: once allocations are removed, the baseline is already approximately equal to PyTorch. The dominant cost is the two GEMMs, not the final SwiGLU pointwise kernel.
+
+## GEMM + SwiGLU V1 float4 post-kernel
+
+V1 keeps both cuBLAS SGEMMs identical to V0 and changes only the final SwiGLU pointwise stage from scalar IO to aligned float4 IO.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **729 passed**;
+- memcheck/racecheck/synccheck: clean;
+- max observed error: 0.
+
+ptxas:
+
+- scalar post-kernel: 22 registers/thread;
+- float4 post-kernel: 28 registers/thread;
+- 0 shared memory;
+- 0 spills.
+
+Representative total latency:
+
+- 32 x 128 x 256: 27.376 us -> 27.648 us;
+- 128 x 512 x 512: 35.840 us -> 35.840 us;
+- 128 x 1024 x 4096: 147.456 us -> 160.560 us;
+- 512 x 1024 x 4096: 590.944 us -> 571.392 us;
+- 512 x 4096 x 4096: 2474.576 us -> 2516.800 us.
+
+Conclusion: once two GEMMs dominate, vectorizing the final activation cannot materially improve end-to-end latency and may regress due to higher register pressure. The next optimization should reduce the number/cost of GEMMs themselves.
