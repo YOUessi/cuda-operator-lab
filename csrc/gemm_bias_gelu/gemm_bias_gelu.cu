@@ -43,7 +43,18 @@ using CublasSgemmFn = cublasStatus_t (*)(
 using cublasLtHandle_t = void*;
 using cublasLtMatmulDesc_t = void*;
 using cublasLtMatrixLayout_t = void*;
-using cublasLtMatmulAlgo_t = void;
+struct cublasLtMatmulAlgo_t {
+  std::uint64_t data[8];
+};
+using cublasLtMatmulPreference_t = void*;
+
+struct cublasLtMatmulHeuristicResult_t {
+  cublasLtMatmulAlgo_t algo;
+  std::size_t workspace_size;
+  cublasStatus_t state;
+  float waves_count;
+  int reserved[4];
+};
 
 using CublasLtCreateFn = cublasStatus_t (*)(cublasLtHandle_t*);
 using CublasLtDestroyFn = cublasStatus_t (*)(cublasLtHandle_t);
@@ -74,6 +85,24 @@ using CublasLtMatmulFn = cublasStatus_t (*)(
     std::size_t,
     cudaStream_t);
 
+using CublasLtPreferenceCreateFn =
+    cublasStatus_t (*)(cublasLtMatmulPreference_t*);
+using CublasLtPreferenceDestroyFn =
+    cublasStatus_t (*)(cublasLtMatmulPreference_t);
+using CublasLtPreferenceSetAttributeFn =
+    cublasStatus_t (*)(cublasLtMatmulPreference_t, int, const void*, std::size_t);
+using CublasLtAlgoGetHeuristicFn = cublasStatus_t (*)(
+    cublasLtHandle_t,
+    cublasLtMatmulDesc_t,
+    cublasLtMatrixLayout_t,
+    cublasLtMatrixLayout_t,
+    cublasLtMatrixLayout_t,
+    cublasLtMatrixLayout_t,
+    cublasLtMatmulPreference_t,
+    int,
+    cublasLtMatmulHeuristicResult_t*,
+    int*);
+
 constexpr int kCudaR32F = 0;
 constexpr int kCublasCompute32F = 68;
 constexpr int kLtDescTransA = 3;
@@ -81,6 +110,8 @@ constexpr int kLtDescTransB = 4;
 constexpr int kLtDescEpilogue = 7;
 constexpr int kLtDescBiasPointer = 8;
 constexpr std::uint32_t kLtEpilogueGeluBias = 36U;
+constexpr int kLtPrefMaxWorkspaceBytes = 1;
+constexpr std::size_t kLtWorkspaceBytes = 32ULL * 1024ULL * 1024ULL;
 
 struct CublasApi {
   void* library = nullptr;
@@ -137,6 +168,10 @@ struct CublasLtApi {
   CublasLtMatrixLayoutCreateFn matrix_layout_create = nullptr;
   CublasLtMatrixLayoutDestroyFn matrix_layout_destroy = nullptr;
   CublasLtMatmulFn matmul = nullptr;
+  CublasLtPreferenceCreateFn preference_create = nullptr;
+  CublasLtPreferenceDestroyFn preference_destroy = nullptr;
+  CublasLtPreferenceSetAttributeFn preference_set_attribute = nullptr;
+  CublasLtAlgoGetHeuristicFn algo_get_heuristic = nullptr;
   bool ready = false;
 
   CublasLtApi() {
@@ -158,12 +193,22 @@ struct CublasLtApi {
     matrix_layout_destroy = reinterpret_cast<CublasLtMatrixLayoutDestroyFn>(
         dlsym(library, "cublasLtMatrixLayoutDestroy"));
     matmul = reinterpret_cast<CublasLtMatmulFn>(dlsym(library, "cublasLtMatmul"));
+    preference_create = reinterpret_cast<CublasLtPreferenceCreateFn>(
+        dlsym(library, "cublasLtMatmulPreferenceCreate"));
+    preference_destroy = reinterpret_cast<CublasLtPreferenceDestroyFn>(
+        dlsym(library, "cublasLtMatmulPreferenceDestroy"));
+    preference_set_attribute = reinterpret_cast<CublasLtPreferenceSetAttributeFn>(
+        dlsym(library, "cublasLtMatmulPreferenceSetAttribute"));
+    algo_get_heuristic = reinterpret_cast<CublasLtAlgoGetHeuristicFn>(
+        dlsym(library, "cublasLtMatmulAlgoGetHeuristic"));
 
     if (create == nullptr || destroy == nullptr ||
         matmul_desc_create == nullptr || matmul_desc_destroy == nullptr ||
         matmul_desc_set_attribute == nullptr ||
         matrix_layout_create == nullptr || matrix_layout_destroy == nullptr ||
-        matmul == nullptr) {
+        matmul == nullptr || preference_create == nullptr ||
+        preference_destroy == nullptr || preference_set_attribute == nullptr ||
+        algo_get_heuristic == nullptr) {
       return;
     }
 
@@ -193,11 +238,16 @@ struct LtDescriptors {
   cublasLtMatrixLayout_t c = nullptr;
   cublasLtMatrixLayout_t d = nullptr;
   const float* bias = nullptr;
+  cublasLtMatmulAlgo_t algo{};
+  bool has_algo = false;
+  void* workspace = nullptr;
+  std::size_t workspace_size = 0;
 
   ~LtDescriptors() {
     if (api == nullptr) {
       return;
     }
+    if (workspace != nullptr) cudaFree(workspace);
     if (a != nullptr) api->matrix_layout_destroy(a);
     if (b != nullptr) api->matrix_layout_destroy(b);
     if (c != nullptr) api->matrix_layout_destroy(c);
@@ -230,7 +280,9 @@ std::unique_ptr<LtDescriptors> create_lt_plan(
     CublasLtApi& api,
     std::uint64_t m,
     std::uint64_t k,
-    std::uint64_t n) {
+    std::uint64_t n,
+    const float* bias,
+    bool choose_algo) {
   auto desc = std::make_unique<LtDescriptors>();
   desc->api = &api;
 
@@ -264,6 +316,75 @@ std::unique_ptr<LtDescriptors> create_lt_plan(
     return nullptr;
   }
 
+  if (bias != nullptr) {
+    const void* bias_ptr = bias;
+    if (api.matmul_desc_set_attribute(
+            desc->op,
+            kLtDescBiasPointer,
+            &bias_ptr,
+            sizeof(bias_ptr)) != kCublasSuccess) {
+      return nullptr;
+    }
+    desc->bias = bias;
+  }
+
+  if (choose_algo) {
+    cublasLtMatmulPreference_t preference = nullptr;
+    if (api.preference_create(&preference) != kCublasSuccess) {
+      return nullptr;
+    }
+
+    const std::size_t max_workspace = kLtWorkspaceBytes;
+    const cublasStatus_t pref_status = api.preference_set_attribute(
+        preference,
+        kLtPrefMaxWorkspaceBytes,
+        &max_workspace,
+        sizeof(max_workspace));
+    if (pref_status != kCublasSuccess) {
+      api.preference_destroy(preference);
+      return nullptr;
+    }
+
+    cublasLtMatmulHeuristicResult_t candidates[8]{};
+    int returned = 0;
+    const cublasStatus_t heuristic_status = api.algo_get_heuristic(
+        api.handle,
+        desc->op,
+        desc->a,
+        desc->b,
+        desc->c,
+        desc->d,
+        preference,
+        8,
+        candidates,
+        &returned);
+    api.preference_destroy(preference);
+
+    if (heuristic_status != kCublasSuccess || returned <= 0) {
+      return nullptr;
+    }
+
+    for (int i = 0; i < returned; ++i) {
+      if (candidates[i].state == kCublasSuccess &&
+          candidates[i].workspace_size <= kLtWorkspaceBytes) {
+        desc->algo = candidates[i].algo;
+        desc->workspace_size = candidates[i].workspace_size;
+        desc->has_algo = true;
+        break;
+      }
+    }
+
+    if (!desc->has_algo) {
+      return nullptr;
+    }
+
+    if (desc->workspace_size > 0) {
+      if (cudaMalloc(&desc->workspace, desc->workspace_size) != cudaSuccess) {
+        return nullptr;
+      }
+    }
+  }
+
   return desc;
 }
 
@@ -271,7 +392,9 @@ LtDescriptors* cached_lt_plan(
     CublasLtApi& api,
     std::uint64_t m,
     std::uint64_t k,
-    std::uint64_t n) {
+    std::uint64_t n,
+    const float* bias,
+    bool choose_algo) {
   thread_local std::unordered_map<
       LtPlanKey,
       std::unique_ptr<LtDescriptors>,
@@ -283,7 +406,7 @@ LtDescriptors* cached_lt_plan(
     return it->second.get();
   }
 
-  auto plan = create_lt_plan(api, m, k, n);
+  auto plan = create_lt_plan(api, m, k, n, bias, choose_algo);
   if (!plan) {
     return nullptr;
   }
@@ -607,7 +730,7 @@ extern "C" int cuda_operator_gemm_bias_gelu_v3(
     return static_cast<int>(cudaErrorSharedObjectSymbolNotFound);
   }
 
-  LtDescriptors* desc = cached_lt_plan(api, m, k, n);
+  LtDescriptors* desc = cached_lt_plan(api, m, k, n, bias, false);
   if (desc == nullptr) {
     return static_cast<int>(cudaErrorUnknown);
   }
@@ -644,6 +767,88 @@ extern "C" int cuda_operator_gemm_bias_gelu_v3(
       nullptr,
       nullptr,
       0,
+      cuda_stream);
+
+  if (status != kCublasSuccess) {
+    return static_cast<int>(cudaErrorUnknown);
+  }
+  return static_cast<int>(cudaGetLastError());
+}
+
+
+extern "C" int cuda_operator_gemm_bias_gelu_v4(
+    const float* input,
+    const float* weight,
+    const float* bias,
+    float* output,
+    std::uint64_t m,
+    std::uint64_t k,
+    std::uint64_t n,
+    void* stream) {
+  const int validation =
+      validate_arguments(input, weight, bias, output, m, k, n);
+  if (validation != static_cast<int>(cudaSuccess) || m == 0 || n == 0) {
+    return validation;
+  }
+
+  auto& api = cublaslt_api();
+  if (!api.ready) {
+    return static_cast<int>(cudaErrorSharedObjectSymbolNotFound);
+  }
+
+  // Use a distinct thread-local key space from V3 by toggling the high bit of n.
+  // The real descriptors still use the original n value.
+  thread_local std::unordered_map<
+      LtPlanKey,
+      std::unique_ptr<LtDescriptors>,
+      LtPlanKeyHash> tuned_cache;
+
+  const LtPlanKey key{m, k, n};
+  LtDescriptors* desc = nullptr;
+  auto it = tuned_cache.find(key);
+  if (it == tuned_cache.end()) {
+    auto plan = create_lt_plan(api, m, k, n, bias, true);
+    if (!plan) {
+      return static_cast<int>(cudaErrorUnknown);
+    }
+    desc = plan.get();
+    tuned_cache.emplace(key, std::move(plan));
+  } else {
+    desc = it->second.get();
+  }
+
+  if (desc->bias != bias) {
+    const void* bias_ptr = bias;
+    if (api.matmul_desc_set_attribute(
+            desc->op,
+            kLtDescBiasPointer,
+            &bias_ptr,
+            sizeof(bias_ptr)) != kCublasSuccess) {
+      return static_cast<int>(cudaErrorUnknown);
+    }
+    desc->bias = bias;
+  }
+
+  const float alpha = 1.0F;
+  const float beta = 0.0F;
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  const cublasStatus_t status = api.matmul(
+      api.handle,
+      desc->op,
+      &alpha,
+      weight,
+      desc->a,
+      input,
+      desc->b,
+      &beta,
+      output,
+      desc->c,
+      output,
+      desc->d,
+      &desc->algo,
+      desc->workspace,
+      desc->workspace_size,
       cuda_stream);
 
   if (status != kCublasSuccess) {
