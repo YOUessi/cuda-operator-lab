@@ -3762,3 +3762,62 @@ The main result is not merely that cuBLASLt supports an epilogue. The case study
 - autotune stability and amortization.
 
 This is the transition from kernel optimization to GEMM runtime optimization.
+
+## E34 — GEMM + SwiGLU V0
+
+Status: **validated baseline**
+
+### Architecture
+
+```text
+X[M,K]
+  ├─ SGEMM with W_gate[N,K] -> output[M,N]
+  └─ SGEMM with W_up[N,K]   -> workspace[M,N]
+
+output = SiLU(output) * workspace
+```
+
+The final pointwise stage is fused, but the two projections remain separate cuBLAS GEMMs.
+
+### Fair benchmark policy
+
+Both our operator and the PyTorch comparison use preallocated output/scratch buffers. No allocation cost is included in the main comparison.
+
+PyTorch reference:
+
+```python
+torch.mm(x, gate_weight.T, out=gate_tmp)
+torch.mm(x, up_weight.T, out=up_tmp)
+torch.ops.aten.silu.out(gate_tmp, out=out)
+out.mul_(up_tmp)
+```
+
+### Validation
+
+```text
+clean build: PASS
+full pytest: 721 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+max_abs_error: 0
+```
+
+### Selected timings
+
+| M x K x N | V0 | PyTorch preallocated |
+|---:|---:|---:|
+| 32 x 128 x 256 | 27.648 us | 25.600 us |
+| 128 x 512 x 512 | 35.840 us | 33.792 us |
+| 128 x 1024 x 4096 | 148.480 us | 145.408 us |
+| 512 x 1024 x 4096 | 528.384 us | 530.432 us |
+| 512 x 4096 x 4096 | 2365.440 us | 2362.464 us |
+
+Artifacts:
+
+- `reports/data/gemm_swiglu_v0_rtx4090.csv`
+- `reports/data/gemm_swiglu_v0_ptxas_sm89.txt`
+
+### Interpretation
+
+The custom fused post-kernel is not the bottleneck; two GEMMs dominate. V1 should vectorize the post-kernel only as an isolated control experiment. If gains remain marginal, further work should move to a dual-GEMM fusion mechanism such as CUTLASS/custom Tensor Core kernels rather than additional pointwise tuning.
