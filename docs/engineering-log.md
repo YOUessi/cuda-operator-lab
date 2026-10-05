@@ -964,3 +964,59 @@ Fallback examples:
 - 1536 x 1024: ~neutral.
 
 As with RMSNorm/LayerNorm dispatch experiments, V4 wrapper timing itself is not used to derive the policy because microsecond-scale GPU operating-state noise can make two calls to the same underlying kernel report different latency. The dispatcher decision is based only on direct V2 versus direct V3 repeated measurements.
+
+## Fused Bias + GELU
+
+### V0 scalar fused kernel
+
+V0 is a one-thread-per-element fused bias-add + exact GELU kernel.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: 590 passed;
+- memcheck/racecheck/synccheck: clean;
+- ptxas: 18 registers/thread, 0 shared memory, 0 spills.
+
+Representative end-to-end gains versus unfused PyTorch:
+
+- 128 x 1024: 10.560 us vs 11.264 us;
+- 1024 x 4096: 29.024 us vs 33.792 us;
+- 2048 x 4096: 49.152 us vs 184.112 us.
+
+### V1 float4 fast path
+
+Aligned float4 vectorization keeps exact GELU and falls back to V0 for unaligned shapes.
+
+Validation:
+
+- full suite: 604 passed;
+- ptxas: 37 registers/thread, 0 shared memory, 0 spills;
+- sanitizer clean.
+
+Large-shape wins:
+
+- 1024 x 4096: 28.672 us -> 20.480 us;
+- 2048 x 4096: 64.512 us -> 36.768 us.
+
+Small shapes can regress slightly.
+
+### V2 profile-guided dispatcher
+
+Two independent L2-evicted interleaved V0/V1 profiles were used. Conservative V1 whitelist:
+
+- 512 x 4096;
+- 1024 x 4096;
+- 2048 x 1024;
+- 2048 x 4096.
+
+All other shapes use V0.
+
+Final validation:
+
+- clean build: PASS;
+- full suite: 614 passed;
+- sanitizer clean;
+- max observed error: 0.
+
+This case demonstrates a pure pointwise fusion where the scalar fused baseline is already useful, while vectorization only becomes worthwhile once the working set is large enough.
