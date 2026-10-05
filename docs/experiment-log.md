@@ -4313,3 +4313,69 @@ Artifacts:
 
 - reports/data/gemm_swiglu_v4_v6_wmma_rtx4090.csv
 - reports/data/gemm_swiglu_v6_ptxas_sm89.txt
+
+## E42 — GEMM + SwiGLU V7: block-level A reuse
+
+Status: **validated positive isolated optimization**
+
+### Controlled change
+
+V6:
+
+```text
+1 warp / 16x16 output tile
+A tile loaded independently for every N tile
+```
+
+V7:
+
+```text
+4 warps / block
+block covers 16x64 output
+one 16x16 A tile loaded once into shared memory
+four N warps reuse the same A tile
+```
+
+No [M,2N] workspace is introduced.
+
+### Validation
+
+```text
+full pytest: 781 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+Resources:
+
+```text
+V6: 40 registers/thread, 0 B shared
+V7: 48 registers/thread, 512 B shared, 0 spills
+```
+
+### Performance
+
+| M x K x N | V4 cuBLAS | V6 | V7 | V6->V7 |
+|---:|---:|---:|---:|---:|
+| 32 x 128 x 256 | 14.416 | 13.312 | 13.200 | 1.008x |
+| 128 x 512 x 512 | 18.432 | 26.624 | 23.552 | 1.130x |
+| 128 x 1024 x 4096 | 53.872 | 120.800 | 91.136 | 1.325x |
+| 512 x 1024 x 4096 | 174.080 | 410.976 | 342.864 | 1.199x |
+| 512 x 4096 x 4096 | 583.632 | 1926.144 | 1577.472 | 1.221x |
+
+### Interpretation
+
+Cross-warp A reuse is a real bottleneck reduction, especially for wide-N GEMMs. However, each 16-row block still reloads the same B weight tiles independently.
+
+Next experiment: V8 with a 32x64 block tile and 8 warps. Two row groups x four column groups allow:
+
+- each A row tile reused across four column warps;
+- each B tile reused across two row warps.
+
+This isolates two-dimensional tile reuse before introducing asynchronous pipelines.
+
+Artifacts:
+
+- reports/data/gemm_swiglu_v4_v6_v7_shared_a_rtx4090.csv
+- reports/data/gemm_swiglu_v7_ptxas_sm89.txt

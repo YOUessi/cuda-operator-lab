@@ -1597,3 +1597,39 @@ Interpretation:
 The workspace elimination is real and helps launch/overhead-dominated small GEMMs. However, the one-warp-per-tile baseline has no block-level A-tile reuse. For a fixed 16-row tile, every 16-column N warp independently reloads the same A[K] tile from global memory. Large GEMMs therefore suffer severe redundant input traffic and weak tiling/pipelining compared with cuBLAS.
 
 Next: V7 keeps the dual-accumulator, no-workspace architecture but groups multiple N-warps in one block and cooperatively loads each 16x16 A tile into shared memory once per K step.
+
+## GEMM + SwiGLU V7 shared-A multi-warp WMMA
+
+V7 isolates block-level A-tile reuse while preserving V6's workspace-free dual-accumulator WMMA structure.
+
+Block tile:
+
+```text
+16 rows x 64 output columns
+4 warps / block
+1 warp -> one 16x16 output tile
+```
+
+For each 16-wide K step, 128 threads cooperatively load one 16x16 BF16 A tile into 512 B shared memory. All four warps reuse that same tile while loading independent gate/up B fragments.
+
+Validation:
+
+- clean build: PASS;
+- full suite: **781 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 48 registers/thread, 512 B shared memory/block, 0 spills.
+
+V6 -> V7:
+
+- 128 x 512 x 512: 26.624 -> 23.552 us (~1.13x);
+- 128 x 1024 x 4096: 120.800 -> 91.136 us (~1.33x);
+- 512 x 1024 x 4096: 410.976 -> 342.864 us (~1.20x);
+- 512 x 4096 x 4096: 1926.144 -> 1577.472 us (~1.22x).
+
+The tiny 32 x 128 x 256 case remains faster than cuBLAS: 13.200 us vs 14.416 us.
+
+V7 remains slower than cuBLAS for larger GEMMs, showing that A reuse alone is insufficient. The next redundant traffic is B: the same weight tile is reloaded by every 16-row M block.
+
+Next: V8 uses an 8-warp 32x64 block tile, sharing both two A row tiles and the gate/up B tiles across row/column warp groups.
