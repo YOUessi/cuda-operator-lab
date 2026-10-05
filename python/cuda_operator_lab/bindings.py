@@ -173,6 +173,16 @@ class _Library:
         ]
         self.handle.cuda_operator_swiglu_v1.restype = ctypes.c_int
 
+        self.handle.cuda_operator_swiglu_v2.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+        ]
+        self.handle.cuda_operator_swiglu_v2.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -1357,3 +1367,45 @@ def swiglu_v1(
 ) -> torch.Tensor:
     out = torch.empty_like(gate)
     return swiglu_v1_into(gate, up, out)
+
+
+def swiglu_v2_into(
+    gate: torch.Tensor,
+    up: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    if not gate.is_cuda or not up.is_cuda or not out.is_cuda:
+        raise ValueError("SwiGLU tensors must be CUDA tensors")
+    if gate.shape != up.shape or out.shape != gate.shape:
+        raise ValueError("gate, up, and output must have the same shape")
+    if gate.dtype != torch.float32 or up.dtype != torch.float32 or out.dtype != torch.float32:
+        raise TypeError("SwiGLU currently supports float32 only")
+    if not gate.is_contiguous() or not up.is_contiguous() or not out.is_contiguous():
+        raise ValueError("SwiGLU tensors must be contiguous")
+    if gate.ndim != 2:
+        raise ValueError("SwiGLU V2 expects a 2-D tensor")
+
+    rows, cols = gate.shape
+    if rows == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=gate.device)
+    code = library.handle.cuda_operator_swiglu_v2(
+        ctypes.c_void_p(gate.data_ptr()),
+        ctypes.c_void_p(up.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(rows),
+        ctypes.c_uint64(cols),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def swiglu_v2(
+    gate: torch.Tensor,
+    up: torch.Tensor,
+) -> torch.Tensor:
+    out = torch.empty_like(gate)
+    return swiglu_v2_into(gate, up, out)

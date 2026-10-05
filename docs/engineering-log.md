@@ -1020,3 +1020,65 @@ Final validation:
 - max observed error: 0.
 
 This case demonstrates a pure pointwise fusion where the scalar fused baseline is already useful, while vectorization only becomes worthwhile once the working set is large enough.
+
+## SwiGLU optimization chain
+
+### V0 scalar fused kernel
+
+```text
+output = silu(gate) * up
+```
+
+V0 uses one thread per element and eliminates the intermediate SiLU tensor.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: 625 passed;
+- sanitizer clean;
+- ptxas: 18 registers/thread, 0 shared memory, 0 spills.
+
+Representative end-to-end gains versus unfused PyTorch:
+
+- 128 x 4096: ~1.09x;
+- 1024 x 4096: ~1.45x;
+- 2048 x 4096: ~1.54x.
+
+### V1 float4 fast path
+
+V1 vectorizes gate/up/output IO with float4 and falls back to V0 when alignment or element-count constraints are not met.
+
+Validation:
+
+- full suite: 639 passed;
+- sanitizer clean;
+- ptxas: 28 registers/thread, 0 shared memory, 0 spills.
+
+Representative warm result:
+
+- 128 x 1024: 10.240 us -> 9.248 us;
+- 1024 x 4096: 24.576 us -> 20.480 us.
+
+### V2 profile-guided dispatcher
+
+Two independent L2-evicted interleaved profiles were used.
+
+Conservative float4 whitelist:
+
+- 256 x 512;
+- 256 x 4096;
+- 512 x 4096;
+- 1024 x 1024;
+- 1024 x 4096;
+- 2048 x 4096.
+
+All other shapes use V0.
+
+Final validation:
+
+- clean build: PASS;
+- full suite: 652 passed;
+- memcheck/racecheck/synccheck: clean;
+- max observed error: 0.
+
+This case shows that even for a very simple pointwise MLP activation, vectorization is workload-dependent and should be promoted only when repeated measurements support it.

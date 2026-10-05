@@ -111,3 +111,55 @@ extern "C" int cuda_operator_swiglu_v1(
       gate, up, output, elements);
   return static_cast<int>(cudaGetLastError());
 }
+
+
+extern "C" int cuda_operator_swiglu_v2(
+    const float* gate,
+    const float* up,
+    float* output,
+    std::uint64_t rows,
+    std::uint64_t cols,
+    void* stream) {
+  const std::uint64_t elements = rows * cols;
+  if (elements == 0) {
+    return static_cast<int>(cudaSuccess);
+  }
+  if (gate == nullptr || up == nullptr || output == nullptr || cols == 0) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+
+  const bool profiled_float4 =
+      (rows == 256 && cols == 512) ||
+      (rows == 256 && cols == 4096) ||
+      (rows == 512 && cols == 4096) ||
+      (rows == 1024 && cols == 1024) ||
+      (rows == 1024 && cols == 4096) ||
+      (rows == 2048 && cols == 4096);
+
+  const bool aligned =
+      (reinterpret_cast<std::uintptr_t>(gate) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(up) % alignof(float4) == 0) &&
+      (reinterpret_cast<std::uintptr_t>(output) % alignof(float4) == 0);
+
+  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+
+  if (profiled_float4 && aligned && (elements % 4 == 0)) {
+    const std::uint64_t vec_elements = elements / 4;
+    const unsigned int blocks = static_cast<unsigned int>(
+        (vec_elements + kThreads - 1) / kThreads);
+    const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
+    swiglu_v1_float4_kernel<<<capped_blocks, kThreads, 0, cuda_stream>>>(
+        reinterpret_cast<const float4*>(gate),
+        reinterpret_cast<const float4*>(up),
+        reinterpret_cast<float4*>(output),
+        vec_elements);
+    return static_cast<int>(cudaGetLastError());
+  }
+
+  const unsigned int blocks = static_cast<unsigned int>(
+      (elements + kThreads - 1) / kThreads);
+  const unsigned int capped_blocks = blocks > 4096U ? 4096U : blocks;
+  swiglu_v0_kernel<<<capped_blocks, kThreads, 0, cuda_stream>>>(
+      gate, up, output, elements);
+  return static_cast<int>(cudaGetLastError());
+}
