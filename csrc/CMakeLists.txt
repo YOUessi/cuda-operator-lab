@@ -8,6 +8,7 @@ add_library(cuda_operator_lab SHARED
   layernorm/layernorm.cu
   fused_residual_layernorm/fused_residual_layernorm.cu
   fused_bias_gelu/fused_bias_gelu.cu
+  swiglu/swiglu.cu
 )
 
 target_include_directories(cuda_operator_lab
@@ -18,6 +19,7 @@ target_include_directories(cuda_operator_lab
     ${CMAKE_CURRENT_SOURCE_DIR}/layernorm
     ${CMAKE_CURRENT_SOURCE_DIR}/fused_residual_layernorm
     ${CMAKE_CURRENT_SOURCE_DIR}/fused_bias_gelu
+    ${CMAKE_CURRENT_SOURCE_DIR}/swiglu
 )
 
 target_link_libraries(cuda_operator_lab
