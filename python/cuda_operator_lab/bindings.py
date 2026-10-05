@@ -305,6 +305,18 @@ class _Library:
         ]
         self.handle.cuda_operator_gemm_swiglu_v2.restype = ctypes.c_int
 
+        self.handle.cuda_operator_gemm_swiglu_v3.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+        ]
+        self.handle.cuda_operator_gemm_swiglu_v3.restype = ctypes.c_int
+
         self.handle.cuda_operator_error_string.argtypes = [ctypes.c_int]
         self.handle.cuda_operator_error_string.restype = ctypes.c_char_p
 
@@ -2104,3 +2116,67 @@ def gemm_swiglu_v2(
         dtype=torch.float32,
     )
     return gemm_swiglu_v2_into(x, packed_weight, workspace, out)
+
+
+def gemm_swiglu_v3_into(
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
+    workspace: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    if not all(t.is_cuda for t in (x, packed_weight, workspace, out)):
+        raise ValueError("GEMM SwiGLU V3 tensors must be CUDA tensors")
+    if x.ndim != 2 or packed_weight.ndim != 2:
+        raise ValueError("x and packed_weight must be 2-D")
+    if x.shape[1] != packed_weight.shape[1]:
+        raise ValueError("x.shape[1] must equal packed_weight.shape[1]")
+    if packed_weight.shape[0] % 2 != 0:
+        raise ValueError("packed_weight.shape[0] must be even")
+    n = packed_weight.shape[0] // 2
+    expected_workspace = (x.shape[0], 2 * n)
+    expected_out = (x.shape[0], n)
+    if workspace.shape != expected_workspace:
+        raise ValueError(f"workspace shape must be {expected_workspace}")
+    if out.shape != expected_out:
+        raise ValueError(f"output shape must be {expected_out}")
+    if any(t.dtype != torch.float32 for t in (x, packed_weight, workspace, out)):
+        raise TypeError("GEMM SwiGLU V3 currently supports float32 only")
+    if not all(t.is_contiguous() for t in (x, packed_weight, workspace, out)):
+        raise ValueError("all GEMM SwiGLU V3 tensors must be contiguous")
+
+    m, k = x.shape
+    if m == 0 or n == 0:
+        return out
+
+    library = _library()
+    stream = torch.cuda.current_stream(device=x.device)
+    code = library.handle.cuda_operator_gemm_swiglu_v3(
+        ctypes.c_void_p(x.data_ptr()),
+        ctypes.c_void_p(packed_weight.data_ptr()),
+        ctypes.c_void_p(workspace.data_ptr()),
+        ctypes.c_void_p(out.data_ptr()),
+        ctypes.c_uint64(m),
+        ctypes.c_uint64(k),
+        ctypes.c_uint64(n),
+        ctypes.c_void_p(stream.cuda_stream),
+    )
+    library.check(code)
+    return out
+
+
+def gemm_swiglu_v3(
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
+) -> torch.Tensor:
+    n = packed_weight.shape[0] // 2
+    workspace = torch.empty(
+        (x.shape[0], 2 * n),
+        device=x.device,
+        dtype=torch.float32,
+    )
+    out = torch.empty(
+        (x.shape[0], n),
+        device=x.device,
+        dtype=torch.float32,
+    )
+    return gemm_swiglu_v3_into(x, packed_weight, workspace, out)

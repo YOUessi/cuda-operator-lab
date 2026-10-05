@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from cuda_operator_lab.benchmarking import measure_us, summarize
-from cuda_operator_lab.bindings import gemm_swiglu_v0_into, gemm_swiglu_v1_into, gemm_swiglu_v2_into
+from cuda_operator_lab.bindings import gemm_swiglu_v0_into, gemm_swiglu_v1_into, gemm_swiglu_v2_into, gemm_swiglu_v3_into
 from cuda_operator_lab.references import gemm_swiglu
 
 
@@ -191,6 +191,56 @@ def main() -> None:
             "ratio_vs_torch_prealloc": v2m / tp if tp else None,
             "ratio_vs_torch_packed": v2m / tpack if tpack else None,
             "max_abs_error": max_abs_v2,
+        })
+
+
+        packed_workspace_v3 = torch.empty(
+            (m, 2 * n), device="cuda", dtype=torch.float32
+        )
+        packed_output_v3 = torch.empty(
+            (m, n), device="cuda", dtype=torch.float32
+        )
+        actual_v3 = gemm_swiglu_v3_into(
+            x, packed_weight, packed_workspace_v3, packed_output_v3
+        )
+        torch.cuda.synchronize()
+        max_abs_v3 = (
+            float((actual_v3 - expected).abs().max().item())
+            if packed_output_v3.numel()
+            else 0.0
+        )
+        v3_samples = measure_us(
+            lambda: gemm_swiglu_v3_into(
+                x, packed_weight, packed_workspace_v3, packed_output_v3
+            ),
+            warmup=args.warmup,
+            repeats=args.repeats,
+        )
+        v3m, _, v3p95 = summarize(v3_samples)
+
+        print(
+            f"{m}x{k}x{n} v3_packed_float4={v3m:.3f} us "
+            f"v2_packed={v2m:.3f} us "
+            f"post_speedup={v2m/v3m:.3f}x "
+            f"torch_packed={tpack:.3f} us "
+            f"max_abs={max_abs_v3:.3e}"
+        )
+        records.append({
+            "m": m,
+            "k": k,
+            "n": n,
+            "variant": "v3_packed_float4_post",
+            "ours_median_us": v3m,
+            "ours_p95_us": v3p95,
+            "torch_prealloc_median_us": tp,
+            "torch_prealloc_p95_us": tp95,
+            "torch_packed_median_us": tpack,
+            "torch_packed_p95_us": tpack95,
+            "torch_alloc_median_us": ta,
+            "torch_alloc_p95_us": ta95,
+            "ratio_vs_torch_prealloc": v3m / tp if tp else None,
+            "ratio_vs_torch_packed": v3m / tpack if tpack else None,
+            "max_abs_error": max_abs_v3,
         })
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

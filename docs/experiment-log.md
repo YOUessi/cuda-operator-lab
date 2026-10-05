@@ -3927,3 +3927,58 @@ The packed projection and final output match PyTorch's packed path exactly in th
 Packed projection is a real architectural improvement and should replace the two-GEMM baseline where weights can be prepacked.
 
 Next experiment: keep the packed single GEMM unchanged and vectorize only the packed split/SwiGLU post-kernel to isolate remaining post-processing overhead.
+
+## E37 — GEMM + SwiGLU V3: float4 packed post-kernel
+
+Status: **validated shape-dependent post optimization**
+
+Held constant:
+
+- prepacked [2N,K] weight;
+- one SGEMM producing [M,2N];
+- identical SwiGLU math.
+
+Changed only:
+
+```text
+V2 scalar packed split/SwiGLU
+-> V3 float4 packed split/SwiGLU
+```
+
+Validation:
+
+```text
+full pytest: 747 passed
+memcheck: 0 errors
+racecheck: 0 hazards / 0 errors / 0 warnings
+synccheck: 0 errors
+```
+
+ptxas:
+
+```text
+V2 scalar split:
+  18 registers/thread
+  0 shared memory
+
+V3 float4 split:
+  26 registers/thread
+  0 shared memory
+  0 spills
+```
+
+Representative timings:
+
+| M x K x N | V2 packed scalar | V3 packed float4 | Result |
+|---:|---:|---:|---|
+| 32 x 128 x 256 | 16.144 | 16.352 | regression |
+| 128 x 512 x 512 | 27.616 | 27.648 | neutral |
+| 128 x 1024 x 4096 | 139.072 | 135.168 | ~1.03x |
+| 512 x 1024 x 4096 | 490.496 | 498.176 | regression |
+| 512 x 4096 x 4096 | 2358.128 | 2240.640 | ~1.052x |
+
+### Decision
+
+Do not promote V3 universally. The architectural gain came from one packed GEMM; post-kernel float4 is secondary and shape-dependent.
+
+Next: stable direct V2/V3 profile and a conservative dispatcher.

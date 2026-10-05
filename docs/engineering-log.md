@@ -1376,3 +1376,35 @@ Representative performance:
 - 512 x 4096 x 4096: 2486.272 us -> 2241.024 us.
 
 Compared with PyTorch's own single packed GEMM path, V2 is competitive: sometimes faster at small shapes, near-equal on large shapes, and slower on some middle shapes. This confirms the architectural win comes primarily from replacing two GEMMs with one wider GEMM rather than from the post-kernel.
+
+## GEMM + SwiGLU V3 packed float4 post-kernel
+
+V3 keeps the V2 packed single SGEMM unchanged and vectorizes only the packed split/SwiGLU post-kernel.
+
+Fast path:
+
+- N divisible by 4;
+- workspace/output 16-byte aligned;
+- float4 gate/up loads from [M,2N];
+- float4 output stores.
+
+Fallback: V2 scalar split kernel.
+
+Validation:
+
+- clean CUDA 12.8 / SM 8.9 build: PASS;
+- full suite: **747 passed**;
+- memcheck: 0 errors;
+- racecheck: 0 hazards / 0 errors / 0 warnings;
+- synccheck: 0 errors;
+- ptxas: 26 registers/thread, 0 shared memory, 0 spills.
+
+Representative V2 -> V3:
+
+- 32 x 128 x 256: 16.144 us -> 16.352 us (regression);
+- 128 x 512 x 512: 27.616 us -> 27.648 us (neutral);
+- 128 x 1024 x 4096: 139.072 us -> 135.168 us (~1.03x);
+- 512 x 1024 x 4096: 490.496 us -> 498.176 us (regression);
+- 512 x 4096 x 4096: 2358.128 us -> 2240.640 us (~1.052x).
+
+Conclusion: after packing the two GEMMs into one, the post-kernel is no longer a consistent bottleneck. Vectorization is only useful for selected shapes. A final dispatcher should be based on direct V2/V3 repeated profiling.
