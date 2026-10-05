@@ -96,3 +96,17 @@ def fused_residual_layernorm(
         bias=bias,
         eps=eps,
     )
+
+
+def fused_bias_gelu(
+    x: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    """Trusted float32 bias-add + exact GELU reference."""
+    if x.ndim != 2:
+        raise ValueError("fused_bias_gelu expects a 2-D tensor")
+    if bias.ndim != 1 or bias.shape[0] != x.shape[1]:
+        raise ValueError("bias must be 1-D with length equal to x.shape[1]")
+    if x.dtype != torch.float32 or bias.dtype != torch.float32:
+        raise TypeError("fused_bias_gelu currently supports float32 only")
+    return torch.nn.functional.gelu(x + bias, approximate="none")
