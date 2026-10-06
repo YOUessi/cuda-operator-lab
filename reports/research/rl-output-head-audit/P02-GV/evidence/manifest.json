@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "source_commit": "5e504fec20097df3907b1c7f06d5c50ce554fe99",
+  "bundle_raw_bytes": 167102,
+  "bundle_raw_sha256": "3a2efad15f276926d375c4ace151df9b05d23e4050220a7845bf454ab55e9320",
+  "encoding": "concatenate Base64 parts, decode, decompress XZ, parse JSON; files are exact UTF-8 strings",
+  "parts": [
+    {"name":"part01.b64","bytes":3801,"sha256":"addec44f5dc3fbaa8f0640d51e1e5a3752fa22e4c7776f578a020cd67f06e69b"},
+    {"name":"part02.b64","bytes":3801,"sha256":"e2d8874f64ad8d43d7ff0fbf05cf4fd5b41e5467126e55537e7e38d7dcf32ba1"},
+    {"name":"part03.b64","bytes":2797,"sha256":"5cf7b9284b9e1e2d9bbaf97f6cf79de29bdbc9f6662c7be287581ef552860c7a"}
+  ],
+  "files": [
+    {"name":"cuda_validation01.json","bytes":62109,"sha256":"52406273585412807bade548fdafad0fd0a1ea674acf9033a16f363db4f4794d"},
+    {"name":"cuda_validation01.log","bytes":1345,"sha256":"ebc095d3e4155840aaaa7733edc9e964d5c75c5a4028d5b6b051cfa34dabbe2b"},
+    {"name":"cuda_validation02.json","bytes":62083,"sha256":"99ac9e5cb7d10bbc1fd019ff9fabd0fee86c23daeae1f0866f42daee761dd167"},
+    {"name":"cuda_validation02.log","bytes":4705,"sha256":"04fe8fab2fcaef77c7aa8cc539e60951071b721ca9abb2211ce9c928ed3bc2dd"},
+    {"name":"gpu_attempt03.json","bytes":2747,"sha256":"18edea54de05a33b4a49bd2a7753ecc6f060d42e90d025f43e1f4dd389d6e711"},
+    {"name":"gpu_attempt03.log","bytes":77,"sha256":"3e3b79a6a43eed10810d2a8e25b0d3c356c6ba4b30fb7e8e39c74634f049e6a2"},
+    {"name":"tests_first_implementation.log","bytes":4665,"sha256":"e78032551666386d15c56044a587165236e69ab90a4ceb0d161d366f911b070a"},
+    {"name":"tests_green.log","bytes":4100,"sha256":"35cbe453696987f36a0f446c5bc359875c3d1787681c5b6cace9580d94029389"},
+    {"name":"tests_red.log","bytes":8943,"sha256":"3268aa635b77271853789f6b6692ef75bd903bdbf1ee3f76438b202e83bbb8e4"},
+    {"name":"gpu_attempt02.json","bytes":2744,"sha256":"5ada673f29c5c0d2fb17a32e610442c9388afed3317bcc06e8f61f94e2c7f378"},
+    {"name":"gpu_attempt02.log","bytes":77,"sha256":"3e3b79a6a43eed10810d2a8e25b0d3c356c6ba4b30fb7e8e39c74634f049e6a2"}
+  ]
+}
