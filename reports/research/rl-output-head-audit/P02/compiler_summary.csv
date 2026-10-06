@@ -1,0 +1,13 @@
+provider,train_weight,mode,eager_backward_gemms,aot_backward_gemms,aot_dw_gemms,aot_forward_softmax,aot_forward_logsumexp,inductor_has_saved_token_vocab,inductor_status,max_abs_error
+compat_original,False,logprob_only,3,2,0,0,0,True,pass,4.76837158203125e-07
+minimal,False,logprob_only,2,2,0,0,0,True,pass,4.76837158203125e-07
+compat_original,False,entropy_logged,3,2,0,1,1,True,pass,4.76837158203125e-07
+minimal,False,entropy_logged,2,2,0,1,1,True,pass,4.76837158203125e-07
+compat_original,False,entropy_loss,3,2,0,1,1,True,pass,4.76837158203125e-07
+minimal,False,entropy_loss,2,2,0,1,1,True,pass,4.76837158203125e-07
+compat_original,True,logprob_only,3,3,1,0,0,True,pass,4.76837158203125e-07
+minimal,True,logprob_only,3,3,1,0,0,True,pass,4.76837158203125e-07
+compat_original,True,entropy_logged,3,3,1,1,1,True,pass,4.76837158203125e-07
+minimal,True,entropy_logged,3,3,1,1,1,True,pass,4.76837158203125e-07
+compat_original,True,entropy_loss,3,3,1,1,1,True,pass,9.5367431640625e-07
+minimal,True,entropy_loss,3,3,1,1,1,True,pass,9.5367431640625e-07
