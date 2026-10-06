@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "source_commit": "33f125359b94d0342cc52af3eba20232e0c75221",
+  "bundle_raw_bytes": 770955,
+  "bundle_raw_sha256": "7ae759053d47e50874b85344c26475b072c2feba25ec10bdbd9efa7262385237",
+  "encoding": "Concatenate four Base64 text parts, decode Base64, decompress XZ, parse JSON files dictionary",
+  "parts": [
+    {"name": "part01.b64", "bytes": 4001, "sha256": "03b069087f725272f69c97ed271db9122bb887e0367907f91e843320d9fd5a2b"},
+    {"name": "part02.b64", "bytes": 4001, "sha256": "cf4e00b7380610998c077a2db5b0a475518b8de126b4954e835490076003c163"},
+    {"name": "part03.b64", "bytes": 4001, "sha256": "b77982c3abd93d096a7a1322c9fa26786e87d935b6356c12033f6d8426905473"},
+    {"name": "part04.b64", "bytes": 3165, "sha256": "8d58866ed68617e87f4a6f00c8f0045af980e878fbae1da5911c604deca64512"}
+  ],
+  "files": [
+    {"name": "cpu_compiler01.json", "bytes": 237093, "sha256": "95e0db891a3f6b0fc7647ba8f88a58be6b04cc8d5eb51aa6b87faf39d5bd9d7f"},
+    {"name": "cpu_compat02.json", "bytes": 447026, "sha256": "7959bbefb29ab7e9f78336c1de060946c057b4aa2c0d268e1f05918a88e61426"},
+    {"name": "gpu_attempt01.json", "bytes": 2744, "sha256": "75163a4b0e6f5bfa25ff8d55ad4d0c09d0928814ba731439060e42f082ea2d8f"},
+    {"name": "compiler_summary.csv", "bytes": 1047, "sha256": "14c2374d9bca659a5545a4b6e43fdf8a8a1d40fd005709443fb98f86fa90ed6a", "normalization": "CRLF to LF only; every CSV field checked equal", "local_original_bytes": 1060, "local_original_sha256": "64a2d3ecc71457424cc5351096fdd0c9b9813c561745217c36366685697c1733"},
+    {"name": "demand_red.log", "bytes": 9436, "sha256": "bf82c7ec3a17bbbc5478c0c83d17f8ef3f48fc889d3124d750b17dd81069dc05"},
+    {"name": "audit_red.log", "bytes": 6350, "sha256": "1f7e1b8b15f22dbe4f32b73775c267636fb42d3b83a0b63a41095991e14a6e81"},
+    {"name": "compat_red.log", "bytes": 3347, "sha256": "d076e393d17b0055173a5b9498f1414702a71ef8d43886de2b2ddfe1b11b8d41"},
+    {"name": "gpu_gate_red.log", "bytes": 5353, "sha256": "8ee21e02fb727da04375b7f4b2ab7f3bb3d077cd6cf1eb0fd9996d39d4248209"},
+    {"name": "inplace_red.log", "bytes": 750, "sha256": "591a3f068dccfdd743beda4746ba95d87d92fe232c46f532ac1ff8da80ff7131"},
+    {"name": "unit_final.log", "bytes": 3387, "sha256": "97a9dc8d5cb53152464361ae96a303825e3aa2e51afb0a14a7b440c1a2108fec"}
+  ],
+  "supplemental_verbose_logs_on_Tang_not_uploaded": [
+    {"name": "cpu_compat01.log", "bytes": 1544837, "sha256": "0e1c1e35d338713d06acb8df35e613e525109e4d1ab10c164f8509cbdf595051"},
+    {"name": "cpu_compat02.log", "bytes": 1554332, "sha256": "7550d11b19531f1d44be856ba11c11f0c8202799e575e55552e06f95c225f3b9"},
+    {"name": "cpu_compiler01.log", "bytes": 731094, "sha256": "f35c60e7d5b7c2bf513d5ff0d3e06a06e4c78f2188771a7462433006387885a2"}
+  ],
+  "verification": "All four parts re-fetched from GitHub and hash-checked; decoded JSON bundle hash matches. Nine original JSON/log files match byte-for-byte; summary CSV differs only in line endings and matches field-for-field.",
+  "publication_note": "Initial byte comparison correctly flagged CSV CRLF normalization; hashes distinguish normalized archive CSV from original. No numerical record changed. Normal HTTPS and SSH git-push dry runs lacked existing credentials; no credentials changed or inspected. Primary evidence published through GitHub connector."
+}
