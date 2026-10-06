@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "groups": 64,
+  "event_intervals": 8192,
+  "max_abs_error": 5.340576171875e-05,
+  "source_commit": "c95f26a04bac4b6817e72f7854f1ff4ad1f5e84e",
+  "library_sha256": "9695d3dd1298c0ce6b1fc5e13ab2587dc61a643185127550e2de58354e6d2e21",
+  "helper_sha256": "7d0db36010468fa608ff001a15a7f4f214deb2cda06aa986c55150225119399d",
+  "evidence_encoding": "base64(lzma(JSON)); includes all accepted per-sample timings, orders, metadata and local logs",
+  "evidence_compressed_sha256": "d7cf1fdf1df6f13bb0d6a0dcfcaa6dad1677875a2c1db346c052739e475a006f",
+  "files": {
+    "all_summary.csv": {
+      "bytes": 11027,
+      "sha256": "163b0ceef81a69f9bfb8818f66b28d1c0c2ecb5b774da183d1f653d81bb15178"
+    },
+    "evidence.json.xz.b64": {
+      "bytes": 64477,
+      "sha256": "ee3b6c9b56ac315a52dabe00446c765113d90fc18d0653f62e709043c8f5413b"
+    }
+  },
+  "publication": {
+    "all_summary.csv": "GitHub: byte-for-byte verified",
+    "evidence.json.xz.b64": "Tang only; complete accepted raw samples, metadata and logs; NOT yet published",
+    "failed_smokes": "smoke and smoke02 pre-measure capture segfault; native helper linked CUDA11; excluded from accepted data"
+  },
+  "tests": {
+    "baseline": 869,
+    "submission_contracts_red_then_green": 23,
+    "runtime_guard_red_then_green": 5,
+    "full_suite": 897
+  },
+  "correctness": {
+    "candidate_mode_checks": 128,
+    "cross_mode_bitwise_checks": 96,
+    "immutable_input_weight_checks": 32
+  },
+  "limits": [
+    "same-day adjacent independent processes, not cross-day",
+    "GPU clocks not locked; substantial absolute drift at model-derived dimensions",
+    "round bootstrap intervals may collapse on quantized event samples; not formal certainty",
+    "no new Compute Sanitizer run, no independent reviewer"
+  ]
+}
