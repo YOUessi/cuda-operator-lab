@@ -1,0 +1,9 @@
+mode,policy,cases,mean_regret_pct,max_regret_pct
+eager,fixed_cublas,12,5.711325671689168,9.83526141519846
+eager,fixed_compiler,12,2.309030118521438,8.7930619127921
+eager,legacy_static,12,4.232268405891302,9.83526141519846
+eager,frozen_table,12,1.7617786212296132,8.7930619127921
+graph1,fixed_cublas,12,64.44553845616217,140.07897334649556
+graph1,fixed_compiler,12,0.0,0.0
+graph1,legacy_static,12,66.35467179355935,142.9068755439513
+graph1,frozen_table,12,0.0,0.0
