@@ -37,8 +37,8 @@ def main():
     args.output.parent.mkdir(parents=True,exist_ok=True)
     source=Path(__file__).with_name('submission_native.cu').resolve()
     command=[str(nvcc),'-std=c++17','-O3','-shared','-Xcompiler=-fPIC',
-        '--cudart=none',str(source),str(cudart),'-Xlinker','-rpath','-Xlinker',str(cudart.parent),
-        '-o',str(args.output.resolve())]
+        '--cudart=none',str(source),'-L',str(cudart.parent),'-l',':'+cudart.name,
+        '-Xlinker','-rpath','-Xlinker',str(cudart.parent),'-o',str(args.output.resolve())]
     # Original nvcc path may define a project toolkit layout; preserve that path.
     command[0]=str(args.nvcc.absolute())
     result=subprocess.run(command,text=True,capture_output=True)
