@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "experiment": "R03 full-module audit",
+  "branch": "research/kernel-policy-validation",
+  "base_commit": "8507be588349bfb3206e4356d9a86995396a97c0",
+  "execution_commit": "fc675fc7cef4a0b2f4728b7a81cd512913c2a135",
+  "library_sha256": "9695d3dd1298c0ce6b1fc5e13ab2587dc61a643185127550e2de58354e6d2e21",
+  "gpu": "NVIDIA GeForce RTX 4090 Laptop GPU",
+  "torch": "2.10.0+cu128",
+  "cuda": "12.8",
+  "driver": "580.178.04",
+  "rounds": 6,
+  "samples_per_candidate_per_round": 8,
+  "groups_per_process": 24,
+  "event_intervals_per_process": 2304,
+  "event_intervals_total": 9216,
+  "candidate_output_checks_total": 192,
+  "max_abs_error": 0.00003147125244140625,
+  "regression_tests_passed": 857,
+  "published": {
+    "all_summary.csv": {
+      "rows": 96,
+      "sha256": "c8ee647b62ce68f4aa45043e2b9e7f9dd46ddc92095eecf5f68fe1dd249f23c0",
+      "verification": "all parsed fields compared against Tang-generated source; newline encoding may differ"
+    },
+    "policy.json": {
+      "sha256": "005c7e04737376f4da8eb94943663886514c20b75986112f6f7b7600951766ea",
+      "verification": "byte-identical to policy frozen before held-out runs"
+    }
+  },
+  "runs": {
+    "cal01": {
+      "pid": 282871,
+      "started_utc": "2026-10-06T09:31:05.847156+00:00",
+      "finished_utc": "2026-10-06T09:31:09.048857+00:00",
+      "data_seed": 1701,
+      "order_seed": 2101,
+      "summary_json_sha256": "fe6f145a1c24bd5da8e65b97a69f8cc58e9e87ca6d9ae4c0ce78f0e34f1f4232",
+      "metadata_json_sha256": "e43a9a5af6adeff01719182a967c5da085c261e2222065e75cc5a683bf309994",
+      "raw_json_gz_sha256": "1d774a1beeb9cbc9093feb1490bd2f46ea5b99c359d8603d76cbd654cbdc5139"
+    },
+    "cal02": {
+      "pid": 282985,
+      "started_utc": "2026-10-06T09:31:10.948383+00:00",
+      "finished_utc": "2026-10-06T09:31:14.120421+00:00",
+      "data_seed": 1701,
+      "order_seed": 2102,
+      "summary_json_sha256": "cb52e77286156803e3dd86d2c14ad5dd617b711d2b8a6d74f444a12e15ef956d",
+      "metadata_json_sha256": "acd9db27986160ebd1fd756f8f1734bda4ed6adbf24051c1cac579b5e552cd9f",
+      "raw_json_gz_sha256": "91dcc900fa1d863a9d753440083829fc29a5d2ae4332a4ee5d2602008cde09c6"
+    },
+    "test01": {
+      "pid": 283097,
+      "started_utc": "2026-10-06T09:31:16.101741+00:00",
+      "finished_utc": "2026-10-06T09:31:19.040028+00:00",
+      "data_seed": 1702,
+      "order_seed": 2201,
+      "summary_json_sha256": "c863a3721993b9f334bcc0f862cfb05a7a8f71bee4e02ee18925f8d66b13a791",
+      "metadata_json_sha256": "755e18379acc25ed3a5b8af0fe9628f6e4ae9aadce774b95d5326ab46c788a08",
+      "raw_json_gz_sha256": "92d7a249743fd0e0f8feab0c67a6decf7a7881e28fc9a1dd33a02d14aa5e167c"
+    },
+    "test02": {
+      "pid": 283210,
+      "started_utc": "2026-10-06T09:31:21.064597+00:00",
+      "finished_utc": "2026-10-06T09:31:24.320927+00:00",
+      "data_seed": 1702,
+      "order_seed": 2202,
+      "summary_json_sha256": "9b09919e5aa132307f22acda887c92bb0fde3809dc023ca44ec0eabaecb9e6c2",
+      "metadata_json_sha256": "0bb1324fea7ad90c7c9845ad3dac21fea4cd3c0ae8f64132ad1080ac5e8090ca",
+      "raw_json_gz_sha256": "28b7f2018231cbd3feb23b629e6024dcfae5e362c2509c9ddf862623eae46305"
+    }
+  },
+  "archive": {
+    "path_on_Tang": "/home/you/projects/cuda-operator-lab-research/reports/research/kernel-policy-validation/20261006-module-r03/evidence.tar.xz",
+    "bytes": 59848,
+    "sha256": "53509550ebcb9e9ee3383e046fe233e112f4d488f3fc27d2b18878a976865929",
+    "format": "tar.xz; contains original text files and decompressed raw.json equivalents of raw.json.gz",
+    "published_to_github": false
+  },
+  "limits": [
+    "Adjacent processes in one session; not independent dates or devices",
+    "Uncontrolled clocks and possible host activity; telemetry snapshots are not continuous",
+    "Same-shape held-out tests; no unseen-shape generalization",
+    "All 96 comparison summaries published; full per-sample archive remains on Tang",
+    "No CUDA edits or production policy changes; no new sanitizer run in this batch"
+  ]
+}
