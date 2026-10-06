@@ -59,11 +59,11 @@ class DemandHead(torch.autograd.Function):
             dz = 0
             if dlp is not None:
                 one_hot = torch.zeros_like(logits).scatter_(-1, y[start:end, None], 1)
-                dz = dz + dlp[start:end].to(torch.float32)[:, None] * (one_hot - probs)
+                dz += dlp[start:end].to(torch.float32)[:, None] * (one_hot - probs)
             if dent is not None:
                 log_probs = logits.log_softmax(-1)
                 entropy = torch.logsumexp(logits, -1) - torch.sum(probs * logits, -1)
-                dz = dz + probs * (log_probs + entropy[:, None]) * (-dent[start:end, None])
+                dz += probs * (log_probs + entropy[:, None]) * (-dent[start:end, None])
             # Preserve BF16 cast BEFORE temperature gradient division.
             dz = dz.to(dtype) / ctx.temperature
             if need_dx:
