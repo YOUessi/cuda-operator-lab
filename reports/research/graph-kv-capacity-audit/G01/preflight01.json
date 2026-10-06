@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "started_utc": "2026-10-06T18:26:54.781950+00:00",
+  "finished_utc": "2026-10-06T18:26:56.903270+00:00",
+  "python": "3.10.12",
+  "executable": "/usr/bin/python3",
+  "source": {
+    "argv": ["git", "-C", "/home/you/projects/cuda-operator-lab-graph-kv", "rev-parse", "HEAD"],
+    "returncode": 0,
+    "stdout": "a32995b08d2432ee623c01b1885481e05d16654f",
+    "stderr": ""
+  },
+  "upstream_sglang_commit": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "expected_packages": {"sglang": "0.5.21", "torch": "2.13.0", "transformers": "5.12.1"},
+  "packages": {"sglang": null, "torch": "2.10.0", "transformers": null, "vllm": null, "flashinfer-python": null, "triton": "3.6.0", "huggingface-hub": "1.29.0", "safetensors": "0.8.0"},
+  "gpu_samples": [
+    {"gpu_uuid": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6", "name": "NVIDIA GeForce RTX 4090 Laptop GPU", "driver_version": "580.178.04", "total_mib": 16376.0, "used_mib": 6449.0, "utilization_pct": 96.0, "temperature_c": 69.0, "observed_utc": "2026-10-06T18:26:54.801504+00:00"},
+    {"gpu_uuid": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6", "name": "NVIDIA GeForce RTX 4090 Laptop GPU", "driver_version": "580.178.04", "total_mib": 16376.0, "used_mib": 6443.0, "utilization_pct": 96.0, "temperature_c": 68.0, "observed_utc": "2026-10-06T18:26:55.319900+00:00"},
+    {"gpu_uuid": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6", "name": "NVIDIA GeForce RTX 4090 Laptop GPU", "driver_version": "580.178.04", "total_mib": 16376.0, "used_mib": 6445.0, "utilization_pct": 96.0, "temperature_c": 68.0, "observed_utc": "2026-10-06T18:26:55.840560+00:00"},
+    {"gpu_uuid": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6", "name": "NVIDIA GeForce RTX 4090 Laptop GPU", "driver_version": "580.178.04", "total_mib": 16376.0, "used_mib": 6431.0, "utilization_pct": 95.0, "temperature_c": 69.0, "observed_utc": "2026-10-06T18:26:56.360899+00:00"},
+    {"gpu_uuid": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6", "name": "NVIDIA GeForce RTX 4090 Laptop GPU", "driver_version": "580.178.04", "total_mib": 16376.0, "used_mib": 6430.0, "utilization_pct": 96.0, "temperature_c": 69.0, "observed_utc": "2026-10-06T18:26:56.881101+00:00"}
+  ],
+  "compute_pids": [2815986],
+  "raw_gpu_commands": [
+    {"argv": ["nvidia-smi", "--query-gpu=uuid,name,driver_version,memory.total,memory.used,utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"], "returncode": 0, "stdout": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6, NVIDIA GeForce RTX 4090 Laptop GPU, 580.178.04, 16376, 6449, 96, 69", "stderr": "", "observed_utc": "2026-10-06T18:26:54.801504+00:00"},
+    {"argv": ["nvidia-smi", "--query-gpu=uuid,name,driver_version,memory.total,memory.used,utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"], "returncode": 0, "stdout": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6, NVIDIA GeForce RTX 4090 Laptop GPU, 580.178.04, 16376, 6443, 96, 68", "stderr": "", "observed_utc": "2026-10-06T18:26:55.319900+00:00"},
+    {"argv": ["nvidia-smi", "--query-gpu=uuid,name,driver_version,memory.total,memory.used,utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"], "returncode": 0, "stdout": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6, NVIDIA GeForce RTX 4090 Laptop GPU, 580.178.04, 16376, 6445, 96, 68", "stderr": "", "observed_utc": "2026-10-06T18:26:55.840560+00:00"},
+    {"argv": ["nvidia-smi", "--query-gpu=uuid,name,driver_version,memory.total,memory.used,utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"], "returncode": 0, "stdout": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6, NVIDIA GeForce RTX 4090 Laptop GPU, 580.178.04, 16376, 6431, 95, 69", "stderr": "", "observed_utc": "2026-10-06T18:26:56.360899+00:00"},
+    {"argv": ["nvidia-smi", "--query-gpu=uuid,name,driver_version,memory.total,memory.used,utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"], "returncode": 0, "stdout": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6, NVIDIA GeForce RTX 4090 Laptop GPU, 580.178.04, 16376, 6430, 96, 69", "stderr": "", "observed_utc": "2026-10-06T18:26:56.881101+00:00"}
+  ],
+  "raw_process_command": {"argv": ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,used_gpu_memory", "--format=csv,noheader,nounits"], "returncode": 0, "stdout": "GPU-1fb35e94-6303-c0a8-86c4-0fd4cd36f0d6, 2815986, 5830", "stderr": ""},
+  "errors": [],
+  "decision": {
+    "status": "blocked",
+    "blockers": ["gpu_busy", "active_compute_processes", "sglang_version_mismatch", "torch_version_mismatch", "transformers_version_mismatch"],
+    "performance_started": false,
+    "disclaimer": "Low utilization and package metadata do not prove exclusive access, complete dependencies, driver compatibility or a usable model."
+  },
+  "gpu_runtime_imported": false,
+  "model_weights_loaded": false,
+  "engine_started": false,
+  "no_environment_changes": true
+}
