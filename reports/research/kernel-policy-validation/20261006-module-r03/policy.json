@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "path": "/home/you/projects/cuda-operator-lab-research/reports/research/kernel-policy-validation/20261006-module-r03/cal01",
+      "summary_sha256": "fe6f145a1c24bd5da8e65b97a69f8cc58e9e87ca6d9ae4c0ce78f0e34f1f4232",
+      "source_commit": {
+        "returncode": 0,
+        "stdout": "fc675fc7cef4a0b2f4728b7a81cd512913c2a135",
+        "stderr": ""
+      },
+      "wall_ns": 3187025663,
+      "data_seed": 1701,
+      "order_seed": 2101
+    },
+    {
+      "path": "/home/you/projects/cuda-operator-lab-research/reports/research/kernel-policy-validation/20261006-module-r03/cal02",
+      "summary_sha256": "cb52e77286156803e3dd86d2c14ad5dd617b711d2b8a6d74f444a12e15ef956d",
+      "source_commit": {
+        "returncode": 0,
+        "stdout": "fc675fc7cef4a0b2f4728b7a81cd512913c2a135",
+        "stderr": ""
+      },
+      "wall_ns": 3170571478,
+      "data_seed": 1701,
+      "order_seed": 2102
+    }
+  ],
+  "rule": "V7 only when every calibration process supports >5% via round CI",
+  "isolated": {
+    "gemm_128x1024x4096|eager": "v4_cublas",
+    "gemm_128x1024x4096|graph1": "v4_cublas",
+    "gemm_128x128x2048|eager": "v7_custom",
+    "gemm_128x128x2048|graph1": "v4_cublas",
+    "gemm_128x512x512|eager": "v4_cublas",
+    "gemm_128x512x512|graph1": "v4_cublas",
+    "gemm_16x64x64|eager": "v7_custom",
+    "gemm_16x64x64|graph1": "v4_cublas",
+    "gemm_32x128x256|eager": "v7_custom",
+    "gemm_32x128x256|graph1": "v4_cublas",
+    "gemm_64x128x1024|eager": "v7_custom",
+    "gemm_64x128x1024|graph1": "v4_cublas"
+  },
+  "module": {
+    "gemm_128x1024x4096|eager": "v4_cublas",
+    "gemm_128x1024x4096|graph1": "v4_cublas",
+    "gemm_128x128x2048|eager": "v7_custom",
+    "gemm_128x128x2048|graph1": "v4_cublas",
+    "gemm_128x512x512|eager": "v7_custom",
+    "gemm_128x512x512|graph1": "v4_cublas",
+    "gemm_16x64x64|eager": "v7_custom",
+    "gemm_16x64x64|graph1": "v4_cublas",
+    "gemm_32x128x256|eager": "v7_custom",
+    "gemm_32x128x256|graph1": "v4_cublas",
+    "gemm_64x128x1024|eager": "v7_custom",
+    "gemm_64x128x1024|graph1": "v4_cublas"
+  },
+  "fit_wall_ns": 1293217,
+  "limits": "same-shape offline lookup; no runtime implementation or unseen-shape claim"
+}
