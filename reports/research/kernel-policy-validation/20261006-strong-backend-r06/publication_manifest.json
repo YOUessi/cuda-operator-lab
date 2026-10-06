@@ -1,0 +1,40 @@
+{
+  "schema": 6,
+  "research_base": "1c3dd6850f13f64b6c4d3acad57555473ed7da85",
+  "production_base": "8507be588349bfb3206e4356d9a86995396a97c0",
+  "primary_measurement_commit": "d31279d432045ae43cbe1c122fbd3d9e08b1e3e0",
+  "managed_probe_commit": "6029986133de64febcd5dbf2bf16ca83ec753f11",
+  "collector_commit": "1478001cd758ead79fe78c249909d043e916a717",
+  "production_library_sha256": "9695d3dd1298c0ce6b1fc5e13ab2587dc61a643185127550e2de58354e6d2e21",
+  "tests": {"baseline": 897, "new_contract_tests": 24, "new_managed_graph_tests": 5, "new_evidence_tests": 7, "full_suite": 933, "red_green_observed": true},
+  "primary_groups": 48,
+  "primary_candidate_rows": 184,
+  "primary_event_intervals": 26496,
+  "managed_groups": 6,
+  "managed_event_intervals": 1728,
+  "total_event_intervals": 28224,
+  "checked_candidate_mode_outputs": 196,
+  "primary_additional_compiler_first_call_checks": 24,
+  "max_abs_error_in_candidate_checks": 0.007797718048095703,
+  "max_relative_l2_in_candidate_checks": 0.0017328616231679916,
+  "frozen_policy_sha256": "7db25b62c6df0d725b3ac20eb1fff1209546bab9cfed004d181cb24b810677b6",
+  "published_data": {
+    "all_summary.csv": {"rows": 184, "github_sha256": "4b4424820f79cffe75fd130fa1976abdd4d1dc2a663ae3e947e00f1368c21220", "generated_sha256": "30f9728d30f6bd86de045b22db866c140de4f94df3709110374fb4c3d3b2d632", "verification": "all fields and newline-normalized text identical; GitHub LF, generated CSV CRLF"},
+    "policy_summary.csv": {"rows": 8, "github_sha256": "8aa342eeeeee8e41f2aceb6c6067dbaab9b6a9499a23757726d9da1eaee7ad65", "verification": "all fields and newline-normalized text identical"},
+    "managed_summary.csv": {"rows": 6, "github_sha256": "57df8f1e723d8e180db9f53f89597c8763c8d8148a5db4ea209c046c3017bba0", "verification": "all fields and newline-normalized text identical"},
+    "frozen_policy.json": {"sha256": "7db25b62c6df0d725b3ac20eb1fff1209546bab9cfed004d181cb24b810677b6", "verification": "byte identical to pre-test original"}
+  },
+  "local_only": {
+    "root": "/home/you/projects/cuda-operator-lab-research/reports/research/kernel-policy-validation/20261006-strong-backend-r06",
+    "full_evidence": "collected/evidence.json.xz",
+    "full_evidence_bytes": 149104,
+    "full_evidence_sha256": "af413083f4445b3b12e590ad342df411637ccbe1150982893e2262976d59fe00",
+    "event_only_export": "collected/event_evidence.json.xz.b64",
+    "event_only_export_bytes": 104273,
+    "event_only_export_sha256": "99efde552f1a0d00cd061b41db237d76576ef888e8f30b2831b26bd496da78a5",
+    "description": "All raw CUDA-event and synchronized-wall samples, balanced orders, full metadata, profiler traces and local logs remain on Tang. These binary/raw archives are NOT yet published to GitHub. Git push dry-run had no noninteractive credentials; no credential changes attempted. Summaries were published through the GitHub connector."
+  },
+  "raw_verification": "All 54 groups checked for candidate/round/sample coverage, positive finite times, positional and pairwise order balance; all 184 primary rows, paired bootstrap summaries and frozen policy were recomputed from raw data.",
+  "compiler_verification": "Each of 24 primary case compilations incremented unique_graphs by one and graph_break by zero. Diagnostics observed three actual graph-launch APIs for each of two graph execution arms at all six shapes.",
+  "limits": ["single unlocked GPU and same-session processes", "synthetic BF16-boundary FFN, not full model or quality assessment", "compiler cache and some tuning reused; first-call/setup times are not uniformly cold compile costs", "lookup overhead and full amortization not measured", "no new Compute Sanitizer run", "self-review only, no independent reviewer"]
+}
