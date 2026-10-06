@@ -1,0 +1,74 @@
+{
+  "base_commit": "8507be588349bfb3206e4356d9a86995396a97c0",
+  "execution_commit": "78cbd074ee17135c7e699a9e699e82f43922dfc6",
+  "device": "NVIDIA GeForce RTX 4090 Laptop GPU",
+  "driver": "580.178.04",
+  "torch": "2.10.0+cu128",
+  "cuda": "12.8",
+  "library_sha256": "9695d3dd1298c0ce6b1fc5e13ab2587dc61a643185127550e2de58354e6d2e21",
+  "gpu_clock_policy": "unlocked; no device configuration changes",
+  "cache_policy": "natural warm reuse; no explicit cache flush",
+  "verification": {
+    "existing_repository_tests_passed": 816,
+    "new_cpu_contract_tests_passed": 20,
+    "raw_order_balance_verified": true,
+    "shape_and_alias_output_equality_verified": true,
+    "published_summary_values_verified_against_local_csv": true,
+    "published_comparisons": 84,
+    "timed_event_intervals": 11520,
+    "gpu_correctness_checks_before_measurement": 120,
+    "max_observed_abs_error": 0.000011444091796875,
+    "new_sanitizer_run": false,
+    "new_cuda_kernel_code": false,
+    "independent_reviewer": false
+  },
+  "archival_status": {
+    "github": ["audit.py", "test_audit.py", "README.md", "run01/summary.csv", "run02/summary.csv", "manifest.json", "REPORT.md"],
+    "raw_samples_and_full_metadata": "retained on Tang; not yet fully uploaded to GitHub",
+    "tang_root": "/home/you/projects/cuda-operator-lab-research/reports/research/kernel-policy-validation/20261006-audit",
+    "complete_local_archive": "evidence.json.xz",
+    "complete_local_archive_bytes": 51884,
+    "complete_local_archive_sha256": "de2d2e544397ffb9eb67cb331fb6db448c595270ef179e739e59feb31e8656e7",
+    "note": "Checksums below identify original local files. GitHub CSV transport normalizes CRLF to LF; all parsed fields were compared and match. Tang HTTPS and SSH push authentication checks failed; GitHub connector writes succeeded."
+  },
+  "runs": {
+    "run01": {
+      "started_utc": "2026-10-06T06:18:38.707081+00:00",
+      "finished_utc": "2026-10-06T06:18:41.165405+00:00",
+      "status": "complete",
+      "data_seed": 1307,
+      "order_seed": 1101,
+      "rounds": 6,
+      "samples_per_variant_per_round": 16,
+      "modes": ["eager", "graph1", "graph32"],
+      "event_intervals": 5760,
+      "snapshot_sm_clock_min_mhz": 1950.0,
+      "snapshot_sm_clock_max_mhz": 1950.0,
+      "local_files": {
+        "summary.json": {"sha256": "e65884bdfe5448c4f68e9012ebfee94aa740b9c7b8e847a1382814183ede2bf8", "bytes": 16141},
+        "metadata.json": {"sha256": "247a26d14404d099f38968541471614ffe4c922fdb1034542a327cadd0862efc", "bytes": 19243},
+        "summary.csv": {"sha256": "7299b8a40e2988f99f92600168c373d18a37031501a362f7941146888065e08b", "bytes": 6220},
+        "raw.json.gz": {"sha256": "9dcf78127cb8b78a3214b6e5580647a17f2649991850e3e300a26ae5c697f8d8", "bytes": 28136}
+      }
+    },
+    "run02": {
+      "started_utc": "2026-10-06T06:18:42.242824+00:00",
+      "finished_utc": "2026-10-06T06:18:44.661002+00:00",
+      "status": "complete",
+      "data_seed": 1307,
+      "order_seed": 1102,
+      "rounds": 6,
+      "samples_per_variant_per_round": 16,
+      "modes": ["graph32", "graph1", "eager"],
+      "event_intervals": 5760,
+      "snapshot_sm_clock_min_mhz": 2175.0,
+      "snapshot_sm_clock_max_mhz": 2385.0,
+      "local_files": {
+        "summary.json": {"sha256": "ced16d6e7550ac3c56d94250157631a20bced9f7ac31ca6dd326ec361e4fba12", "bytes": 16111},
+        "metadata.json": {"sha256": "724992460511d353d2460ec017e81860db9b1ad10b7808b38ab52a55c612d8b0", "bytes": 19233},
+        "summary.csv": {"sha256": "252726661befa02a48c92d4628aacd8c92adbf1fe4664f2e57fd6d388d95a150", "bytes": 6190},
+        "raw.json.gz": {"sha256": "9bd70457bbf15ea25ea939e2580bd05dfd70de228bbdb6a96bef0d918e9143f3", "bytes": 27667}
+      }
+    }
+  }
+}
