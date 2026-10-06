@@ -1,0 +1,42 @@
+{
+  "schema": 6,
+  "choices": {
+    "ffn_128x1536x8960|eager": "inductor",
+    "ffn_128x1536x8960|graph1": "inductor",
+    "ffn_128x512x512|eager": "inductor",
+    "ffn_128x512x512|graph1": "inductor",
+    "ffn_16x1536x8960|eager": "inductor",
+    "ffn_16x1536x8960|graph1": "inductor",
+    "ffn_16x64x64|eager": "inductor",
+    "ffn_16x64x64|graph1": "inductor",
+    "ffn_1x1536x8960|eager": "inductor",
+    "ffn_1x1536x8960|graph1": "inductor",
+    "ffn_32x128x256|eager": "custom_v7",
+    "ffn_32x128x256|graph1": "inductor"
+  },
+  "sources": [
+    {
+      "path": "reports/research/kernel-policy-validation/20261006-strong-backend-r06/cal01",
+      "sha256": "56f0abc52b9910174fc05232cb91ca964671bdf2e59c4d2f78bdf8ba7111c151",
+      "pid": 1750060,
+      "elapsed_wall_ns": 13644863420,
+      "source_commit": {
+        "returncode": 0,
+        "stdout": "d31279d432045ae43cbe1c122fbd3d9e08b1e3e0",
+        "stderr": ""
+      }
+    },
+    {
+      "path": "reports/research/kernel-policy-validation/20261006-strong-backend-r06/cal02",
+      "sha256": "cb65bdff6c68b79f150e946de1e95bb7e17d007b63f254627a931909b27cf2ed",
+      "pid": 1750343,
+      "elapsed_wall_ns": 6498399487,
+      "source_commit": {
+        "returncode": 0,
+        "stdout": "d31279d432045ae43cbe1c122fbd3d9e08b1e3e0",
+        "stderr": ""
+      }
+    }
+  ],
+  "rule": "prefer inductor; switch only when >=1.05x in all calibrations; no test input"
+}
