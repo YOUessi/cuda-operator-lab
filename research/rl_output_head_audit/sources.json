@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "audit_date": "2026-10-07",
+  "project_base": "8507be588349bfb3206e4356d9a86995396a97c0",
+  "cce_repository_resolution": {
+    "original": "apple/ml-cross-entropy",
+    "repository_id": 887718293,
+    "canonical": "apple-aiml-research/ml-cross-entropy",
+    "note": "Canonical owner resolved through GitHub get_repo by stable repository ID after old URL redirected. No fork substituted."
+  },
+  "files": [
+    {"id": "verl_head", "repo": "verl-project/verl", "commit": "8718ca30a3f002f93b7c4fd99b9b2506718681bc", "path": "verl/utils/experimental/torch_functional.py", "blob_sha": "9a8778c18d1f35e38a6b9a8285774465b6795f3f", "execution": "CPU extracted fallback definitions; optional FlashAttention disabled"},
+    {"id": "liger_scaled", "repo": "linkedin/Liger-Kernel", "commit": "29eb8ca2239661f6469f9cf935bb7a455d8b0171", "path": "src/liger_kernel/ops/fused_linear_scaled_cross_entropy.py", "blob_sha": "e93dda8fa89ecbdc67b1091d913b3a2273bf812d", "execution": "CPU extracted single-device fallback definitions only"},
+    {"id": "liger_sm90", "repo": "linkedin/Liger-Kernel", "commit": "29eb8ca2239661f6469f9cf935bb7a455d8b0171", "path": "src/liger_kernel/ops/cutedsl/ops/fused_scaled_cross_entropy_sm90.py", "blob_sha": "ef77d1806154406ef58f77102a7c6a81fe6c4d51", "execution": "source inspection only, never executed on CPU/Ada"},
+    {"id": "liger_standard_ce", "repo": "linkedin/Liger-Kernel", "commit": "29eb8ca2239661f6469f9cf935bb7a455d8b0171", "path": "src/liger_kernel/ops/fused_linear_cross_entropy.py", "blob_sha": "df35068ce55e1b79a52cf8b49d59fe68f04f2137", "execution": "source inspection only; different operator from scaled CE plus entropy"},
+    {"id": "cce_api", "repo": "apple-aiml-research/ml-cross-entropy", "commit": "3de376c106a1916bc5e1b619f9c77c87a461ee1c", "path": "cut_cross_entropy/linear_cross_entropy.py", "blob_sha": "98f75d0c6ad9e11c2036a8ea6ae0dd2aa5d1b4b9", "execution": "source inspection only"},
+    {"id": "cce_autograd", "repo": "apple-aiml-research/ml-cross-entropy", "commit": "3de376c106a1916bc5e1b619f9c77c87a461ee1c", "path": "cut_cross_entropy/cce.py", "blob_sha": "3d79b63d26cdc818c54249554a45eb2a493f1272", "execution": "source inspection only"}
+  ],
+  "notes": [
+    "No upstream files are redistributed here. Fetch original pinned paths and verify Git blob identity.",
+    "Pinned main snapshots are not claims about packaged stable releases.",
+    "Existing CE chunk-size tuning is not a measured improvement for scaled CE/entropy.",
+    "CPU source-fragment tracing does not establish CUDA latency, compiler elimination, or full-framework execution."
+  ]
+}
