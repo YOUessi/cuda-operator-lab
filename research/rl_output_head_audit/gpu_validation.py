@@ -40,7 +40,7 @@ def diagnostic_allowed(snapshot):
             if len(lines) != 1:
                 return False
             fields = [s.strip() for s in lines[0].split(',')]
-            if len(fields) != 8:
+            if len(fields) != 7:
                 return False
             total, used, util, temp = map(float, fields[3:])
             if not all(math.isfinite(n) for n in (total, used, util, temp)):
